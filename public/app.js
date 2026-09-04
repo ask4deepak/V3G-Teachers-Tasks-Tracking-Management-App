@@ -2049,16 +2049,18 @@ async function renderDetailedResponseReport(container) {
 
 async function renderUsersDirectory(container) {
   const [users, campuses] = await Promise.all([
-    api('/users?user_type=TEACHER'),
+    api('/users?user_type='), // all users
     api('/campuses')
   ]);
 
+  const canManageAccess = state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN';
+
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
-      <h2><i class="fa-solid fa-chalkboard-user"></i> Faculty Directory</h2>
+      <h2><i class="fa-solid fa-chalkboard-user"></i> Faculty & Staff Directory</h2>
       ${hasPermission('users.create') ? `
         <button class="btn btn-primary" onclick="openCreateUserModal()">
-          <i class="fa-solid fa-user-plus"></i> Add Teacher
+          <i class="fa-solid fa-user-plus"></i> Add User
         </button>
       ` : ''}
     </div>
@@ -2071,10 +2073,11 @@ async function renderUsersDirectory(container) {
               <tr>
                 <th>Name</th>
                 <th>Email</th>
-                <th>Employee Code</th>
+                <th>User Type</th>
                 <th>Campus</th>
                 <th>Class Teacher</th>
                 <th>Status</th>
+                ${canManageAccess ? `<th>Role & Access</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -2082,10 +2085,17 @@ async function renderUsersDirectory(container) {
                 <tr>
                   <td><strong>${escapeHtml(u.display_name)}</strong></td>
                   <td>${escapeHtml(u.email)}</td>
-                  <td>${escapeHtml(u.employee_code || 'N/A')}</td>
+                  <td><span class="badge ${u.user_type === 'SUPER_ADMIN' ? 'badge-overdue' : (u.user_type === 'ADMIN' ? 'badge-in-progress' : 'badge-not-started')}">${u.user_type}</span></td>
                   <td>${escapeHtml(u.campus_name)}</td>
                   <td>${u.class_teacher_status ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>
                   <td><span class="badge badge-${u.status.toLowerCase()}">${u.status}</span></td>
+                  ${canManageAccess ? `
+                    <td>
+                      <button class="btn btn-secondary btn-sm" onclick="openManageUserAccessModal('${u.id}')">
+                        <i class="fa-solid fa-key"></i> Assign Role & Campus
+                      </button>
+                    </td>
+                  ` : ''}
                 </tr>
               `).join('')}
             </tbody>
@@ -2094,6 +2104,120 @@ async function renderUsersDirectory(container) {
       </div>
     </div>
   `;
+}
+
+async function openManageUserAccessModal(userId) {
+  const [userData, roles, campuses] = await Promise.all([
+    api(`/users/${userId}/access`),
+    api('/roles'),
+    api('/campuses')
+  ]);
+
+  const { user, access } = userData;
+  const currentAccess = access[0] || {};
+  const currentRoleId = currentAccess.role_id || (roles[1] ? roles[1].id : '');
+  const currentCampusId = currentAccess.campus_id || '';
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Manage Role & Campus Scope</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(user.display_name)} (${escapeHtml(user.email)})</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-manage-access" onsubmit="handleSaveUserAccess(event, '${userId}')">
+        
+        <div class="form-group">
+          <label><strong>1. User Type (Portal Experience) <span class="text-danger">*</span></strong></label>
+          <select name="user_type" class="form-select" required>
+            <option value="TEACHER" ${user.user_type === 'TEACHER' ? 'selected' : ''}>TEACHER (Teacher Portal - My Tasks, Submissions, My Performance)</option>
+            <option value="ADMIN" ${user.user_type === 'ADMIN' ? 'selected' : ''}>ADMIN (Admin Portal - Task Builder, Reports, Campus Management)</option>
+            <option value="SUPER_ADMIN" ${user.user_type === 'SUPER_ADMIN' ? 'selected' : ''}>SUPER_ADMIN (Full System Access Across All Campuses)</option>
+          </select>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
+            User Type controls which dashboard & menu they see.
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label><strong>2. Assign Role (Permissions) <span class="text-danger">*</span></strong></label>
+          <select name="role_id" class="form-select" required>
+            ${roles.map(r => `
+              <option value="${r.id}" ${r.id === currentRoleId ? 'selected' : ''}>
+                ${escapeHtml(r.name)} - ${escapeHtml(r.description || '')}
+              </option>
+            `).join('')}
+          </select>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
+            e.g., "Campus Principal" grants full campus task creation and reporting rights.
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label><strong>3. Assigned Campus Scope <span class="text-danger">*</span></strong></label>
+          <select name="campus_id" class="form-select">
+            <option value="" ${!currentCampusId ? 'selected' : ''}>All Campuses (Global / Super Admin)</option>
+            ${campuses.map(c => `
+              <option value="${c.id}" ${c.id === currentCampusId ? 'selected' : ''}>
+                ${escapeHtml(c.name)} (${c.code})
+              </option>
+            `).join('')}
+          </select>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
+            Restricts the administrator so they can ONLY create tasks, preview teachers, and view reports for this campus.
+          </p>
+        </div>
+
+        <div style="background:var(--primary-light); border-left:4px solid var(--primary); padding:12px; border-radius:var(--radius-sm); margin:16px 0; font-size:0.85rem;">
+          <i class="fa-solid fa-circle-info"></i> <strong>Example:</strong> To make a user the <strong>Principal of North Campus</strong>:
+          <br />• Set User Type = <code>ADMIN</code>
+          <br />• Set Role = <code>Campus Principal</code>
+          <br />• Set Campus Scope = <code>North Campus</code>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> Save Access & Scope
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSaveUserAccess(event, userId) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const userType = formData.get('user_type');
+  const roleId = formData.get('role_id');
+  const campusId = formData.get('campus_id') || null;
+
+  const payload = {
+    user_type: userType,
+    assignments: [
+      {
+        role_id: roleId,
+        campus_id: campusId,
+        permission_overrides: null
+      }
+    ]
+  };
+
+  try {
+    const res = await api(`/users/${userId}/access`, {
+      method: 'PUT',
+      body: payload
+    });
+    showToast(res.message, 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
 }
 
 async function openCreateUserModal() {

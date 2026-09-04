@@ -477,6 +477,113 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
   }
 });
 
+router.get('/users/:id/access', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    let accessList = [];
+    let user;
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      user = store.users.find(u => u.id === userId);
+      accessList = store.user_access.filter(a => a.user_id === userId).map(a => {
+        const role = store.roles.find(r => r.id === a.role_id);
+        const campus = store.campuses.find(c => c.id === a.campus_id);
+        return {
+          ...a,
+          role_name: role ? role.name : 'Unknown',
+          campus_name: campus ? campus.name : 'All Campuses (Global)'
+        };
+      });
+    } else {
+      const uRes = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+      user = uRes.rows[0];
+
+      const q = `
+        SELECT ua.*, r.name as role_name, c.name as campus_name
+        FROM user_access ua
+        JOIN roles r ON ua.role_id = r.id
+        LEFT JOIN campuses c ON ua.campus_id = c.id
+        WHERE ua.user_id = $1
+      `;
+      const result = await db.query(q, [userId]);
+      accessList = result.rows;
+    }
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    res.json({
+      user: auth.sanitizeUser(user),
+      access: accessList
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/users/:id/access', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { user_type, assignments = [] } = req.body; // assignments: [{ role_id, campus_id, permission_overrides }]
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const user = store.users.find(u => u.id === userId);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      if (user_type) {
+        user.user_type = user_type;
+        user.updated_at = now;
+      }
+
+      // Replace user_access rows
+      store.user_access = store.user_access.filter(a => a.user_id !== userId);
+
+      for (const item of assignments) {
+        store.user_access.push({
+          id: uuidv4(),
+          user_id: userId,
+          role_id: item.role_id,
+          campus_id: item.campus_id || null,
+          permission_overrides: item.permission_overrides || null,
+          created_at: now,
+          updated_at: now
+        });
+      }
+    } else {
+      await db.transaction(async (client) => {
+        if (user_type) {
+          await client.query('UPDATE users SET user_type = $1, updated_at = NOW() WHERE id = $2', [user_type, userId]);
+        }
+
+        await client.query('DELETE FROM user_access WHERE user_id = $1', [userId]);
+
+        for (const item of assignments) {
+          await client.query(`
+            INSERT INTO user_access (id, user_id, role_id, campus_id, permission_overrides)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
+          `, [uuidv4(), userId, item.role_id, item.campus_id || null, item.permission_overrides ? JSON.stringify(item.permission_overrides) : null]);
+        }
+      });
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'PERMISSION_CHANGED',
+      entityType: 'USER_ACCESS',
+      entityId: userId,
+      description: `Updated roles, user type (${user_type}), and campus authorizations for user ID ${userId}.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'User roles and campus authorizations updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================================
 // 5. GROUP MANAGEMENT & JOINING REQUESTS ROUTES
 // ============================================================================
