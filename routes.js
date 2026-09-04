@@ -942,7 +942,7 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
 
       memberships = store.group_memberships.filter(m => m.group_id === groupId);
       const teacherIdsInCampus = store.user_attributes.filter(a => a.campus_id === group.campus_id).map(a => a.user_id);
-      campusTeachers = store.users.filter(u => u.user_type === 'TEACHER' && u.status === 'ACTIVE' && teacherIdsInCampus.includes(u.id));
+      campusTeachers = store.users.filter(u => u.status === 'ACTIVE' && (teacherIdsInCampus.includes(u.id) || (u.campus_id === group.campus_id)));
     } else {
       const gRes = await db.query('SELECT * FROM groups WHERE id = $1', [groupId]);
       group = gRes.rows[0];
@@ -955,7 +955,7 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
         SELECT DISTINCT u.id, u.display_name, u.email, u.employee_code
         FROM users u
         JOIN user_attributes ua ON u.id = ua.user_id
-        WHERE u.user_type = 'TEACHER' AND u.status = 'ACTIVE' AND ua.campus_id = $1
+        WHERE u.status = 'ACTIVE' AND ua.campus_id = $1
         ORDER BY u.display_name ASC
       `, [group.campus_id]);
       campusTeachers = tRes.rows;

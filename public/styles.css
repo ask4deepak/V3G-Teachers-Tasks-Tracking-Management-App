@@ -260,6 +260,35 @@ button, input, select, textarea {
   border-radius: var(--radius-full);
 }
 
+.nav-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-subtle);
+  margin: 14px 8px 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reports-nav-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  border-bottom: 2px solid var(--border-color);
+  padding-bottom: 12px;
+  overflow-x: auto;
+}
+
+.reports-nav-tabs .btn {
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
 .sidebar-footer {
   padding: 16px;
   border-top: 1px solid var(--border-color);

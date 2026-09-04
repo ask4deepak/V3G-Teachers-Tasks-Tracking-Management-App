@@ -95,22 +95,30 @@ async function resolveUserAccessContext(user) {
   const effectivePermissions = {};
   const roleNames = [];
 
-  // For teachers without explicit user_access rows, they still have an assigned campus in user_attributes
-  if (user.user_type === 'TEACHER') {
-    let teacherAttrs = [];
-    if (db.isMemoryFallback()) {
-      teacherAttrs = db.getMemoryStore().user_attributes.filter(a => a.user_id === user.id);
-    } else {
-      const res = await db.query('SELECT DISTINCT campus_id FROM user_attributes WHERE user_id = $1', [user.id]);
-      teacherAttrs = res.rows;
-    }
-    teacherAttrs.forEach(a => authorizedCampusIdSet.add(a.campus_id));
+  // For any user with campus attributes, include them
+  let userCampusAttrs = [];
+  if (db.isMemoryFallback()) {
+    userCampusAttrs = db.getMemoryStore().user_attributes.filter(a => a.user_id === user.id);
+  } else {
+    const res = await db.query('SELECT DISTINCT campus_id FROM user_attributes WHERE user_id = $1', [user.id]);
+    userCampusAttrs = res.rows;
   }
+  userCampusAttrs.forEach(a => { if (a.campus_id) authorizedCampusIdSet.add(a.campus_id); });
 
   // Process access rows
   for (const acc of accessRows) {
     if (acc.campus_id) {
       authorizedCampusIdSet.add(acc.campus_id);
+    } else {
+      // Global campus access for this role
+      let allActiveCampuses = [];
+      if (db.isMemoryFallback()) {
+        allActiveCampuses = db.getMemoryStore().campuses.filter(c => c.status === 'ACTIVE');
+      } else {
+        const res = await db.query('SELECT id FROM campuses WHERE status = $1', ['ACTIVE']);
+        allActiveCampuses = res.rows;
+      }
+      allActiveCampuses.forEach(c => authorizedCampusIdSet.add(c.id));
     }
 
     let rolePerms = {};

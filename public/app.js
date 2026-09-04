@@ -192,9 +192,9 @@ function buildSidebarNav() {
   const nav = elements.sidebarNav;
   nav.innerHTML = '';
 
-  const isTeacher = state.user.user_type === 'TEACHER';
+  const isTeacherOnly = state.user.user_type === 'TEACHER';
 
-  if (isTeacher) {
+  if (isTeacherOnly) {
     // TEACHER NAVIGATION
     addNavItem(nav, 'teacher-dashboard', 'fa-gauge-high', 'Dashboard');
     addNavItem(nav, 'teacher-tasks', 'fa-list-check', 'My Tasks');
@@ -204,6 +204,7 @@ function buildSidebarNav() {
     addNavItem(nav, 'my-profile', 'fa-id-badge', 'My Profile');
   } else {
     // ADMIN NAVIGATION (Subject to granular permissions)
+    addNavSectionTitle(nav, 'Administration');
     addNavItem(nav, 'admin-dashboard', 'fa-gauge-high', 'Dashboard');
 
     if (hasPermission('tasks.view')) {
@@ -212,8 +213,10 @@ function buildSidebarNav() {
     if (hasPermission('recurring_tasks.view')) {
       addNavItem(nav, 'recurring-tasks', 'fa-repeat', 'Recurring Tasks');
     }
-    if (hasPermission('reports.task_wise.view') || hasPermission('reports.teacher_wise.view')) {
-      addNavItem(nav, 'reports-task-wise', 'fa-chart-pie', 'Reports');
+    if (hasPermission('reports.task_wise.view') || hasPermission('reports.teacher_wise.view') || hasPermission('reports.detailed.view')) {
+      addNavItem(nav, 'reports-task-wise', 'fa-chart-pie', 'Task-Wise Reports');
+      addNavItem(nav, 'reports-detailed', 'fa-table-columns', 'Detailed Responses');
+      addNavItem(nav, 'reports-teacher-wise', 'fa-chart-line', 'Teacher Performance');
     }
     if (hasPermission('users.view')) {
       addNavItem(nav, 'users', 'fa-chalkboard-user', 'Users / Teachers');
@@ -236,7 +239,21 @@ function buildSidebarNav() {
     if (state.user.user_type === 'SUPER_ADMIN' || state.user.isSuperAdmin) {
       addNavItem(nav, 'roles', 'fa-key', 'Roles & Access');
     }
+
+    // HYBRID / DUAL-ROLE: Teacher Workspace for Admins, Principals & Academic Coordinators
+    addNavSectionTitle(nav, 'My Teacher Workspace');
+    addNavItem(nav, 'teacher-tasks', 'fa-list-check', 'My Assigned Tasks');
+    addNavItem(nav, 'teacher-history', 'fa-clock-rotate-left', 'Submission History');
+    addNavItem(nav, 'teacher-performance', 'fa-chart-line', 'My Performance');
+    addNavItem(nav, 'my-profile', 'fa-id-badge', 'My Profile');
   }
+}
+
+function addNavSectionTitle(container, title) {
+  const el = document.createElement('div');
+  el.className = 'nav-section-title';
+  el.innerHTML = `<span>${title}</span>`;
+  container.appendChild(el);
 }
 
 function addNavItem(container, route, icon, label, hasBadge = false) {
@@ -1643,12 +1660,31 @@ async function commitPublishTask() {
 // 8. REPORTS & REMINDERS
 // ============================================================================
 
+function renderReportTabs(activeTab) {
+  return `
+    <div class="reports-nav-tabs">
+      <button class="btn ${activeTab === 'task-wise' ? 'btn-primary' : 'btn-outline'}" onclick="navigateTo('reports-task-wise')">
+        <i class="fa-solid fa-chart-pie"></i> Task-Wise Summary
+      </button>
+      <button class="btn ${activeTab === 'detailed' ? 'btn-primary' : 'btn-outline'}" onclick="navigateTo('reports-detailed')">
+        <i class="fa-solid fa-table-columns"></i> Detailed Responses (Questions Grid)
+      </button>
+      <button class="btn ${activeTab === 'teacher-wise' ? 'btn-primary' : 'btn-outline'}" onclick="navigateTo('reports-teacher-wise')">
+        <i class="fa-solid fa-chart-line"></i> Teacher Performance
+      </button>
+    </div>
+  `;
+}
+
 async function renderTaskWiseReport(container) {
   const tasks = await api('/tasks');
   const selectedTaskId = state.filters.reportTaskId || (tasks[0] ? tasks[0].id : null);
 
   if (!selectedTaskId) {
-    container.innerHTML = `<div class="empty-state"><h3>No tasks available for reporting</h3></div>`;
+    container.innerHTML = `
+      ${renderReportTabs('task-wise')}
+      <div class="empty-state"><h3>No tasks available for reporting</h3></div>
+    `;
     return;
   }
 
@@ -1656,6 +1692,8 @@ async function renderTaskWiseReport(container) {
   const { task, stats, rows } = report;
 
   container.innerHTML = `
+    ${renderReportTabs('task-wise')}
+
     <!-- Top Filter Bar -->
     <div class="filter-bar">
       <div style="display:flex; align-items:center; gap:8px;">
@@ -1886,11 +1924,14 @@ async function commitSendReminders(taskId) {
 
 // Teacher-Wise Performance Report
 async function renderTeacherWiseReport(container) {
-  const teachers = await api('/users?user_type=TEACHER');
+  const teachers = await api('/users?user_type=');
   const selectedTeacherId = state.filters.teacherId || (teachers[0] ? teachers[0].id : null);
 
   if (!selectedTeacherId) {
-    container.innerHTML = `<div class="empty-state"><h3>No teachers found</h3></div>`;
+    container.innerHTML = `
+      ${renderReportTabs('teacher-wise')}
+      <div class="empty-state"><h3>No faculty members found</h3></div>
+    `;
     return;
   }
 
@@ -1898,9 +1939,11 @@ async function renderTeacherWiseReport(container) {
   const { teacher, stats, assignments } = data;
 
   container.innerHTML = `
+    ${renderReportTabs('teacher-wise')}
+
     <div class="filter-bar">
       <div style="display:flex; align-items:center; gap:8px;">
-        <label><strong>Select Teacher:</strong></label>
+        <label><strong>Select Faculty Member:</strong></label>
         <select class="form-select" onchange="state.filters.teacherId = this.value; loadCurrentView();">
           ${teachers.map(t => `<option value="${t.id}" ${t.id === selectedTeacherId ? 'selected' : ''}>${escapeHtml(t.display_name)} (${escapeHtml(t.email)})</option>`).join('')}
         </select>
@@ -1987,7 +2030,10 @@ async function renderDetailedResponseReport(container) {
   const selectedTaskId = state.filters.detailedTaskId || (tasks[0] ? tasks[0].id : null);
 
   if (!selectedTaskId) {
-    container.innerHTML = `<div class="empty-state"><h3>No tasks available</h3></div>`;
+    container.innerHTML = `
+      ${renderReportTabs('detailed')}
+      <div class="empty-state"><h3>No tasks available</h3></div>
+    `;
     return;
   }
 
@@ -2047,6 +2093,8 @@ async function renderDetailedResponseReport(container) {
   });
 
   container.innerHTML = `
+    ${renderReportTabs('detailed')}
+
     <!-- Top Filter & Task Selection Bar -->
     <div class="filter-bar">
       <div style="display:flex; align-items:center; gap:8px;">
@@ -2446,7 +2494,8 @@ async function openManageUserAccessModal(userId) {
   const { user, access } = userData;
   const currentAccess = access[0] || {};
   const currentRoleId = currentAccess.role_id || (roles[1] ? roles[1].id : '');
-  const currentCampusId = currentAccess.campus_id || '';
+  const currentAssignedCampusIds = new Set(access.map(a => a.campus_id).filter(Boolean));
+  const isCurrentlyGlobal = access.some(a => a.campus_id === null) || (access.length === 0 && user.user_type === 'SUPER_ADMIN');
 
   const html = `
     <div class="card-header">
@@ -2462,12 +2511,12 @@ async function openManageUserAccessModal(userId) {
         <div class="form-group">
           <label><strong>1. User Type (Portal Experience) <span class="text-danger">*</span></strong></label>
           <select name="user_type" class="form-select" required>
-            <option value="TEACHER" ${user.user_type === 'TEACHER' ? 'selected' : ''}>TEACHER (Teacher Portal - My Tasks, Submissions, My Performance)</option>
-            <option value="ADMIN" ${user.user_type === 'ADMIN' ? 'selected' : ''}>ADMIN (Admin Portal - Task Builder, Reports, Campus Management)</option>
+            <option value="TEACHER" ${user.user_type === 'TEACHER' ? 'selected' : ''}>TEACHER (Teacher Portal Only - My Tasks, Submissions, My Performance)</option>
+            <option value="ADMIN" ${user.user_type === 'ADMIN' ? 'selected' : ''}>ADMIN (Admin Portal + Integrated Teacher Workspace for Assigned Tasks)</option>
             <option value="SUPER_ADMIN" ${user.user_type === 'SUPER_ADMIN' ? 'selected' : ''}>SUPER_ADMIN (Full System Access Across All Campuses)</option>
           </select>
           <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
-            User Type controls which dashboard & menu they see.
+            Admins & Principals get both full administrative management and a personal Teacher Workspace.
           </p>
         </div>
 
@@ -2481,30 +2530,36 @@ async function openManageUserAccessModal(userId) {
             `).join('')}
           </select>
           <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
-            e.g., "Campus Principal" grants full campus task creation and reporting rights.
+            e.g., "Campus Principal" or "Academic Coordinator".
           </p>
         </div>
 
         <div class="form-group">
-          <label><strong>3. Assigned Campus Scope <span class="text-danger">*</span></strong></label>
-          <select name="campus_id" class="form-select">
-            <option value="" ${!currentCampusId ? 'selected' : ''}>All Campuses (Global / Super Admin)</option>
-            ${campuses.map(c => `
-              <option value="${c.id}" ${c.id === currentCampusId ? 'selected' : ''}>
-                ${escapeHtml(c.name)} (${c.code})
-              </option>
-            `).join('')}
-          </select>
-          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">
-            Restricts the administrator so they can ONLY create tasks, preview teachers, and view reports for this campus.
+          <label><strong>3. Assigned Managed Campuses (Multi-Select) <span class="text-danger">*</span></strong></label>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:8px;">
+            Principals and Coordinators can be assigned multiple campuses to manage simultaneously.
           </p>
+          <div style="background:var(--border-subtle); padding:12px; border-radius:var(--radius-md); display:flex; flex-direction:column; gap:8px;">
+            <label class="checkbox-label" style="font-weight:600; border-bottom:1px solid var(--border-color); padding-bottom:6px;">
+              <input type="checkbox" id="chk-global-campus" name="is_global_campus" value="true" ${isCurrentlyGlobal ? 'checked' : ''} onchange="toggleGlobalCampusSelection(this.checked)" />
+              <span><i class="fa-solid fa-globe text-primary"></i> All Campuses (Global Management Scope)</span>
+            </label>
+            <div id="individual-campuses-list" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:8px; margin-top:4px;">
+              ${campuses.map(c => `
+                <label class="checkbox-label">
+                  <input type="checkbox" name="campus_ids" class="campus-access-checkbox" value="${c.id}" ${!isCurrentlyGlobal && currentAssignedCampusIds.has(c.id) ? 'checked' : ''} />
+                  <span>${escapeHtml(c.name)} (${escapeHtml(c.code)})</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
         </div>
 
         <div style="background:var(--primary-light); border-left:4px solid var(--primary); padding:12px; border-radius:var(--radius-sm); margin:16px 0; font-size:0.85rem;">
-          <i class="fa-solid fa-circle-info"></i> <strong>Example:</strong> To make a user the <strong>Principal of North Campus</strong>:
+          <i class="fa-solid fa-circle-info"></i> <strong>Example:</strong> To assign a Principal to manage <strong>North Campus AND South Campus</strong>:
           <br />• Set User Type = <code>ADMIN</code>
           <br />• Set Role = <code>Campus Principal</code>
-          <br />• Set Campus Scope = <code>North Campus</code>
+          <br />• Check <code>North Campus</code> and <code>South Campus</code>
         </div>
 
         <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
@@ -2519,22 +2574,40 @@ async function openManageUserAccessModal(userId) {
   openModal(html);
 }
 
+function toggleGlobalCampusSelection(isGlobal) {
+  const checkboxes = document.querySelectorAll('.campus-access-checkbox');
+  checkboxes.forEach(cb => {
+    if (isGlobal) {
+      cb.checked = false;
+      cb.disabled = true;
+    } else {
+      cb.disabled = false;
+    }
+  });
+}
+
 async function handleSaveUserAccess(event, userId) {
   event.preventDefault();
   const formData = new FormData(event.target);
   const userType = formData.get('user_type');
   const roleId = formData.get('role_id');
-  const campusId = formData.get('campus_id') || null;
+  const isGlobal = formData.get('is_global_campus') === 'true';
+  const selectedCampusIds = formData.getAll('campus_ids');
+
+  let assignments = [];
+  if (isGlobal || selectedCampusIds.length === 0) {
+    assignments = [{ role_id: roleId, campus_id: null, permission_overrides: null }];
+  } else {
+    assignments = selectedCampusIds.map(cid => ({
+      role_id: roleId,
+      campus_id: cid,
+      permission_overrides: null
+    }));
+  }
 
   const payload = {
     user_type: userType,
-    assignments: [
-      {
-        role_id: roleId,
-        campus_id: campusId,
-        permission_overrides: null
-      }
-    ]
+    assignments
   };
 
   try {
@@ -2542,7 +2615,7 @@ async function handleSaveUserAccess(event, userId) {
       method: 'PUT',
       body: payload
     });
-    showToast(res.message, 'success');
+    showToast(res.message || 'Access and campus scope updated successfully!', 'success');
     closeModal();
     loadCurrentView();
   } catch {

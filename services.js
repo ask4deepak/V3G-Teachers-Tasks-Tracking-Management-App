@@ -39,7 +39,8 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
 
   if (db.isMemoryFallback()) {
     const store = db.getMemoryStore();
-    allTeachers = store.users.filter(u => u.user_type === 'TEACHER' && u.status === 'ACTIVE');
+    const campusTeacherIds = store.user_attributes.filter(a => campusIds.includes(a.campus_id)).map(a => a.user_id);
+    allTeachers = store.users.filter(u => u.status === 'ACTIVE' && (campusTeacherIds.includes(u.id) || (u.campus_id && campusIds.includes(u.campus_id))));
     userAttributes = store.user_attributes;
     groupMemberships = store.group_memberships.filter(m => m.status === 'APPROVED');
   } else {
@@ -47,7 +48,7 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
       SELECT DISTINCT u.id, u.email, u.employee_code, u.first_name, u.last_name, u.display_name, u.class_teacher_status, u.status
       FROM users u
       JOIN user_attributes ua ON u.id = ua.user_id
-      WHERE u.user_type = 'TEACHER' AND u.status = 'ACTIVE' AND ua.campus_id = ANY($1)
+      WHERE u.status = 'ACTIVE' AND ua.campus_id = ANY($1)
       ORDER BY u.display_name ASC
     `, [campusIds]);
     allTeachers = teachersRes.rows;
