@@ -1,0 +1,33 @@
+{
+  "name": "v3g-teacher-task-tracking-management-app",
+  "version": "1.0.0",
+  "description": "Teacher Task, Workflow, Performance & Administration Web Application (Version 1)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test/suite.js"
+  },
+  "keywords": [
+    "teacher",
+    "tasks",
+    "workflow",
+    "management",
+    "performance",
+    "education"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^10.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.10.0",
+    "pg": "^8.13.3",
+    "uuid": "^11.1.0",
+    "xlsx": "^0.18.5"
+  }
+}

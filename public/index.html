@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="Teacher Task, Workflow, Performance & Administration Web Application" />
+  <title>Teacher Task Tracking & Administration System</title>
+  
+  <!-- Modern Typography (Inter & Outfit) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
+  
+  <!-- FontAwesome Icons for clean UI cues -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  
+  <!-- Main Stylesheet -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="theme-light">
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Global Modal Container -->
+  <div id="modal-container" class="modal-backdrop hidden">
+    <div id="modal-content" class="modal-card"></div>
+  </div>
+
+  <!-- AUTH / LOGIN VIEW -->
+  <div id="view-login" class="login-wrapper hidden">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="brand-badge"><i class="fa-solid fa-graduation-cap"></i></div>
+        <h1>TaskTrack Pro</h1>
+        <p class="subtitle">Teacher Task, Workflow & Performance Portal</p>
+      </div>
+
+      <form id="form-login" class="login-form">
+        <div class="form-group">
+          <label for="login-email"><i class="fa-regular fa-envelope"></i> Institutional Email</label>
+          <input type="email" id="login-email" class="form-input" placeholder="e.g. sarah.johnson@institution.edu" required />
+        </div>
+
+        <div class="form-group">
+          <label for="login-password"><i class="fa-solid fa-lock"></i> Password</label>
+          <input type="password" id="login-password" class="form-input" placeholder="••••••••" required />
+        </div>
+
+        <button type="submit" id="btn-login" class="btn btn-primary btn-block">
+          <span>Sign In</span> <i class="fa-solid fa-arrow-right"></i>
+        </button>
+      </form>
+
+      <div class="demo-logins">
+        <div class="demo-title">Quick Demo Login:</div>
+        <div class="demo-btn-grid">
+          <button type="button" class="btn btn-demo" onclick="demoLogin('superadmin@institution.edu', 'Admin@123')">
+            <i class="fa-solid fa-shield-halved"></i> Super Admin
+          </button>
+          <button type="button" class="btn btn-demo" onclick="demoLogin('admin.north@institution.edu', 'Admin@123')">
+            <i class="fa-solid fa-building-columns"></i> Admin (North)
+          </button>
+          <button type="button" class="btn btn-demo" onclick="demoLogin('teacher.sarah@institution.edu', 'Teacher@123')">
+            <i class="fa-solid fa-chalkboard-user"></i> Teacher (Sarah)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- APP SHELL -->
+  <div id="app-shell" class="app-container hidden">
+    
+    <!-- Mobile Navigation Backdrop -->
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+    <!-- Sidebar Navigation -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <i class="fa-solid fa-graduation-cap"></i>
+          <span>TaskTrack</span>
+        </div>
+        <button id="btn-close-sidebar" class="btn-icon mobile-only" aria-label="Close Navigation">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <div class="user-profile-badge">
+        <div class="user-avatar" id="nav-user-avatar">U</div>
+        <div class="user-meta">
+          <div class="user-name" id="nav-user-name">User Name</div>
+          <div class="user-role-tag" id="nav-user-role">Role</div>
+        </div>
+      </div>
+
+      <!-- Navigation Links Container -->
+      <nav id="sidebar-nav" class="nav-menu"></nav>
+
+      <div class="sidebar-footer">
+        <button id="btn-logout" class="btn btn-outline btn-block text-danger">
+          <i class="fa-solid fa-right-from-bracket"></i> Sign Out
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-wrapper">
+      
+      <!-- Top Header Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="btn-toggle-sidebar" class="btn-icon mobile-only" aria-label="Toggle Sidebar">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+          <div class="page-header-info">
+            <h1 id="page-title" class="page-title">Dashboard</h1>
+            <span id="page-campus-scope" class="campus-badge">North Campus</span>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <!-- Refresh Action on Every Main Screen -->
+          <button id="btn-refresh" class="btn btn-secondary btn-sm" title="Refresh Screen Data">
+            <i class="fa-solid fa-rotate"></i> <span class="hide-sm">Refresh</span>
+          </button>
+          <div class="theme-toggle" id="theme-toggle" title="Toggle Dark/Light Mode">
+            <i class="fa-solid fa-moon"></i>
+          </div>
+        </div>
+      </header>
+
+      <!-- View Container Dynamic Injector -->
+      <section id="main-content" class="content-body" tabindex="-1"></section>
+
+    </main>
+  </div>
+
+  <!-- Client Application Script -->
+  <script src="app.js"></script>
+</body>
+</html>
