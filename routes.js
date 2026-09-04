@@ -306,6 +306,49 @@ router.post('/masters', auth.requirePermission('masters.create'), async (req, re
   }
 });
 
+router.put('/masters/:id', auth.requirePermission('masters.edit'), async (req, res) => {
+  try {
+    const masterId = req.params.id;
+    const { name, code, campus_id, sort_order = 0, status = 'ACTIVE' } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+
+    if (campus_id) auth.assertCampusAccess(req.user, campus_id);
+
+    const now = new Date();
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const mv = store.master_values.find(m => m.id === masterId);
+      if (!mv) return res.status(404).json({ error: 'Master value not found' });
+      mv.name = name;
+      mv.code = code || mv.code;
+      mv.campus_id = campus_id || null;
+      mv.sort_order = parseInt(sort_order, 10);
+      mv.status = status;
+      mv.updated_at = now;
+    } else {
+      await db.query(`
+        UPDATE master_values
+        SET name = $1, code = $2, campus_id = $3, sort_order = $4, status = $5, updated_at = NOW()
+        WHERE id = $6
+      `, [name, code, campus_id || null, parseInt(sort_order, 10), status, masterId]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: campus_id || null,
+      action: 'MASTER_UPDATED',
+      entityType: 'MASTER_VALUE',
+      entityId: masterId,
+      description: `Updated master value "${name}"`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Master value updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================================
 // 4. USERS & TEACHERS MANAGEMENT ROUTES
 // ============================================================================
@@ -472,6 +515,131 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
     });
 
     res.json({ success: true, id: userId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+    let user;
+    let userAttributes = [];
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      user = store.users.find(u => u.id === userId);
+      userAttributes = store.user_attributes.filter(a => a.user_id === userId);
+    } else {
+      const uRes = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+      user = uRes.rows[0];
+
+      const aRes = await db.query(`
+        SELECT ua.*, mv.master_type, mv.name as master_name
+        FROM user_attributes ua
+        JOIN master_values mv ON ua.master_value_id = mv.id
+        WHERE ua.user_id = $1
+      `, [userId]);
+      userAttributes = aRes.rows;
+    }
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    res.json({
+      user: auth.sanitizeUser(user),
+      attributes: userAttributes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { first_name, last_name, employee_code, phone, status = 'ACTIVE', campus_id, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [], password } = req.body;
+
+    if (!first_name || !last_name) {
+      return res.status(400).json({ error: 'First Name and Last Name are required' });
+    }
+
+    if (campus_id) auth.assertCampusAccess(req.user, campus_id);
+
+    const displayName = `${first_name} ${last_name}`.trim();
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const user = store.users.find(u => u.id === userId);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      user.first_name = first_name;
+      user.last_name = last_name;
+      user.display_name = displayName;
+      user.employee_code = employee_code || user.employee_code;
+      user.phone = phone || null;
+      user.status = status;
+      user.class_teacher_status = Boolean(class_teacher_status);
+      user.updated_at = now;
+
+      if (password) {
+        user.password_hash = await bcrypt.hash(password, 10);
+      }
+
+      if (campus_id) {
+        store.user_attributes = store.user_attributes.filter(a => a.user_id !== userId);
+        const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
+        for (const mid of allMasterIds) {
+          store.user_attributes.push({
+            id: uuidv4(),
+            user_id: userId,
+            campus_id,
+            master_value_id: mid,
+            created_at: now,
+            created_by: req.user.id
+          });
+        }
+      }
+    } else {
+      await db.transaction(async (client) => {
+        if (password) {
+          const hash = await bcrypt.hash(password, 10);
+          await client.query(`
+            UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, password_hash = $8, updated_at = NOW()
+            WHERE id = $9
+          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), hash, userId]);
+        } else {
+          await client.query(`
+            UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, updated_at = NOW()
+            WHERE id = $8
+          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), userId]);
+        }
+
+        if (campus_id) {
+          await client.query('DELETE FROM user_attributes WHERE user_id = $1', [userId]);
+          const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
+          for (const mid of allMasterIds) {
+            await client.query(`
+              INSERT INTO user_attributes (id, user_id, campus_id, master_value_id, created_by)
+              VALUES ($1, $2, $3, $4, $5)
+              ON CONFLICT (user_id, campus_id, master_value_id) DO NOTHING
+            `, [uuidv4(), userId, campus_id, mid, req.user.id]);
+          }
+        }
+      });
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: campus_id || null,
+      action: 'USER_UPDATED',
+      entityType: 'USER',
+      entityId: userId,
+      description: `Updated faculty user details for ${displayName}`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'User updated successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -712,6 +880,171 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
     });
 
     res.json({ success: true, id: groupId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/groups/:id', auth.requirePermission('groups.edit'), async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const { name, description, campus_id, allow_join_requests = true, status = 'ACTIVE' } = req.body;
+    if (!name || !campus_id) return res.status(400).json({ error: 'Group name and campus are required' });
+
+    auth.assertCampusAccess(req.user, campus_id);
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const group = store.groups.find(g => g.id === groupId);
+      if (!group) return res.status(404).json({ error: 'Group not found' });
+      group.name = name;
+      group.description = description;
+      group.campus_id = campus_id;
+      group.allow_join_requests = Boolean(allow_join_requests);
+      group.status = status;
+      group.updated_at = now;
+    } else {
+      await db.query(`
+        UPDATE groups
+        SET name = $1, description = $2, campus_id = $3, allow_join_requests = $4, status = $5, updated_at = NOW()
+        WHERE id = $6
+      `, [name, description, campus_id, Boolean(allow_join_requests), status, groupId]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId,
+      action: 'GROUP_UPDATED',
+      entityType: 'GROUP',
+      entityId: groupId,
+      description: `Updated group "${name}".`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Group updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    let group;
+    let campusTeachers = [];
+    let memberships = [];
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      group = store.groups.find(g => g.id === groupId);
+      if (!group) return res.status(404).json({ error: 'Group not found' });
+
+      memberships = store.group_memberships.filter(m => m.group_id === groupId);
+      const teacherIdsInCampus = store.user_attributes.filter(a => a.campus_id === group.campus_id).map(a => a.user_id);
+      campusTeachers = store.users.filter(u => u.user_type === 'TEACHER' && u.status === 'ACTIVE' && teacherIdsInCampus.includes(u.id));
+    } else {
+      const gRes = await db.query('SELECT * FROM groups WHERE id = $1', [groupId]);
+      group = gRes.rows[0];
+      if (!group) return res.status(404).json({ error: 'Group not found' });
+
+      const mRes = await db.query('SELECT * FROM group_memberships WHERE group_id = $1', [groupId]);
+      memberships = mRes.rows;
+
+      const tRes = await db.query(`
+        SELECT DISTINCT u.id, u.display_name, u.email, u.employee_code
+        FROM users u
+        JOIN user_attributes ua ON u.id = ua.user_id
+        WHERE u.user_type = 'TEACHER' AND u.status = 'ACTIVE' AND ua.campus_id = $1
+        ORDER BY u.display_name ASC
+      `, [group.campus_id]);
+      campusTeachers = tRes.rows;
+    }
+
+    const membershipMap = new Map();
+    memberships.forEach(m => membershipMap.set(m.user_id, m));
+
+    const result = campusTeachers.map(t => {
+      const m = membershipMap.get(t.id);
+      return {
+        id: t.id,
+        display_name: t.display_name,
+        email: t.email,
+        employee_code: t.employee_code,
+        status: m ? m.status : 'NOT_MEMBER',
+        membership_role: m ? m.membership_role : 'MEMBER',
+        is_member: m ? m.status === 'APPROVED' : false
+      };
+    });
+
+    result.sort((a, b) => a.display_name.localeCompare(b.display_name));
+    res.json({ group, teachers: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/groups/:id/members', auth.requirePermission('groups.manage_members'), async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const { members = [] } = req.body; // members: [{ user_id, membership_role: 'MEMBER'|'GROUP_ADMIN' }]
+    const now = new Date();
+
+    let group;
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      group = store.groups.find(g => g.id === groupId);
+      if (!group) return res.status(404).json({ error: 'Group not found' });
+
+      // Keep only memberships that are in the new members list or maintain pending requests not touched
+      store.group_memberships = store.group_memberships.filter(m => m.group_id !== groupId || m.status === 'PENDING');
+
+      for (const m of members) {
+        store.group_memberships.push({
+          id: uuidv4(),
+          group_id: groupId,
+          user_id: m.user_id,
+          membership_role: m.membership_role || 'MEMBER',
+          status: 'APPROVED',
+          requested_at: now,
+          requested_by: req.user.id,
+          reviewed_at: now,
+          reviewed_by: req.user.id,
+          review_notes: 'Manager Assignment',
+          created_at: now,
+          updated_at: now
+        });
+      }
+    } else {
+      const gRes = await db.query('SELECT * FROM groups WHERE id = $1', [groupId]);
+      group = gRes.rows[0];
+      if (!group) return res.status(404).json({ error: 'Group not found' });
+
+      await db.transaction(async (client) => {
+        await client.query(`DELETE FROM group_memberships WHERE group_id = $1 AND status != 'PENDING'`, [groupId]);
+
+        for (const m of members) {
+          await client.query(`
+            INSERT INTO group_memberships (id, group_id, user_id, membership_role, status, requested_at, requested_by, reviewed_at, reviewed_by, review_notes)
+            VALUES ($1, $2, $3, $4, 'APPROVED', NOW(), $5, NOW(), $5, 'Manager Assignment')
+            ON CONFLICT (group_id, user_id)
+            DO UPDATE SET membership_role = $4, status = 'APPROVED', reviewed_at = NOW(), reviewed_by = $5
+          `, [uuidv4(), groupId, m.user_id, m.membership_role || 'MEMBER', req.user.id]);
+        }
+      });
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: group.campus_id,
+      action: 'GROUP_UPDATED',
+      entityType: 'GROUP',
+      entityId: groupId,
+      description: `Updated member roster for group "${group.name}" (${members.length} members).`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Group membership roster updated successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1639,6 +1972,113 @@ router.post('/import/preview', auth.requirePermission('imports.execute'), upload
 // 10. ROLES & AUDIT LOGS ROUTES
 // ============================================================================
 
+router.get('/reports/detailed-response', auth.requirePermission('reports.detailed.view'), async (req, res) => {
+  try {
+    const { task_id, campus_id, status, search } = req.query;
+    if (!task_id) return res.status(400).json({ error: 'task_id is required' });
+
+    let task;
+    let rows = [];
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      task = store.tasks.find(t => t.id === task_id);
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+
+      rows = store.assignments.filter(a => a.task_id === task_id).map(a => {
+        const u = store.users.find(usr => usr.id === a.user_id);
+        const sub = store.submissions.find(s => s.assignment_id === a.id);
+        const c = store.campuses.find(cmp => cmp.id === a.campus_id);
+        const uAttrs = store.user_attributes.filter(attr => attr.user_id === a.user_id);
+        const depts = uAttrs.map(attr => store.master_values.find(mv => mv.id === attr.master_value_id && mv.master_type === 'DEPARTMENT')?.name).filter(Boolean);
+        const desigs = uAttrs.map(attr => store.master_values.find(mv => mv.id === attr.master_value_id && mv.master_type === 'DESIGNATION')?.name).filter(Boolean);
+        const subjs = uAttrs.map(attr => store.master_values.find(mv => mv.id === attr.master_value_id && mv.master_type === 'SUBJECT')?.name).filter(Boolean);
+        const cats = uAttrs.map(attr => store.master_values.find(mv => mv.id === attr.master_value_id && mv.master_type === 'CATEGORY')?.name).filter(Boolean);
+
+        return {
+          assignment_id: a.id,
+          user_id: a.user_id,
+          display_name: u ? u.display_name : 'Unknown',
+          email: u ? u.email : 'Unknown',
+          employee_code: u ? u.employee_code : 'N/A',
+          campus_id: a.campus_id,
+          campus_name: c ? c.name : 'Unknown',
+          department_names: depts.join(', ') || 'N/A',
+          designation_name: desigs[0] || 'Teacher',
+          subject_names: subjs.join(', ') || 'N/A',
+          category_names: cats.join(', ') || 'N/A',
+          class_teacher_status: u ? (u.class_teacher_status ? 'Yes' : 'No') : 'No',
+          assigned_at: a.assigned_at,
+          due_at: a.due_at,
+          submitted_at: sub ? sub.submitted_at : null,
+          status: a.status,
+          answers: sub ? sub.answers : {}
+        };
+      });
+
+      if (!req.user.isSuperAdmin) {
+        rows = rows.filter(r => req.user.authorizedCampusIds.includes(r.campus_id));
+      }
+      if (campus_id) rows = rows.filter(r => r.campus_id === campus_id);
+      if (status) rows = rows.filter(r => r.status === status);
+      if (search) rows = rows.filter(r => r.display_name.toLowerCase().includes(search.toLowerCase()) || r.email.toLowerCase().includes(search.toLowerCase()));
+    } else {
+      const tRes = await db.query('SELECT * FROM tasks WHERE id = $1', [task_id]);
+      task = tRes.rows[0];
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+
+      let q = `
+        SELECT a.id as assignment_id, a.user_id, u.display_name, u.email, u.employee_code, u.class_teacher_status,
+        a.campus_id, c.name as campus_name, a.assigned_at, a.due_at, a.status,
+        s.submitted_at, s.answers
+        FROM assignments a
+        JOIN users u ON a.user_id = u.id
+        JOIN campuses c ON a.campus_id = c.id
+        LEFT JOIN submissions s ON a.id = s.assignment_id
+        WHERE a.task_id = $1
+      `;
+      const p = [task_id];
+
+      if (!req.user.isSuperAdmin) {
+        p.push(req.user.authorizedCampusIds || []);
+        q += ` AND a.campus_id = ANY($${p.length})`;
+      }
+      if (campus_id) {
+        p.push(campus_id);
+        q += ` AND a.campus_id = $${p.length}`;
+      }
+      if (status) {
+        p.push(status);
+        q += ` AND a.status = $${p.length}`;
+      }
+      if (search) {
+        p.push(`%${search}%`);
+        q += ` AND (u.display_name ILIKE $${p.length} OR u.email ILIKE $${p.length})`;
+      }
+
+      q += ' ORDER BY u.display_name ASC';
+      const result = await db.query(q, p);
+      rows = result.rows.map(r => ({
+        ...r,
+        class_teacher_status: r.class_teacher_status ? 'Yes' : 'No',
+        department_names: 'Department',
+        designation_name: 'Teacher',
+        subject_names: 'Subjects',
+        category_names: 'Categories',
+        answers: r.answers || {}
+      }));
+    }
+
+    res.json({
+      task,
+      questions: typeof task.questions === 'string' ? JSON.parse(task.questions) : (task.questions || []),
+      rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/roles', auth.requireSuperAdmin, async (req, res) => {
   try {
     let roles = [];
@@ -1649,6 +2089,91 @@ router.get('/roles', auth.requireSuperAdmin, async (req, res) => {
       roles = result.rows;
     }
     res.json(roles);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/roles', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    const { name, description, permissions = {}, status = 'ACTIVE' } = req.body;
+    if (!name) return res.status(400).json({ error: 'Role name is required' });
+
+    const roleId = uuidv4();
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      if (store.roles.some(r => r.name.toLowerCase() === name.toLowerCase())) {
+        return res.status(400).json({ error: 'Role with this name already exists' });
+      }
+      store.roles.push({
+        id: roleId,
+        name,
+        description,
+        permissions,
+        is_system_role: false,
+        status,
+        created_at: now,
+        updated_at: now
+      });
+    } else {
+      await db.query(`
+        INSERT INTO roles (id, name, description, permissions, is_system_role, status)
+        VALUES ($1, $2, $3, $4, FALSE, $5)
+      `, [roleId, name, description, JSON.stringify(permissions), status]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'ROLE_CREATED',
+      entityType: 'ROLE',
+      entityId: roleId,
+      description: `Created role "${name}" with ${Object.keys(permissions).length} permission keys.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, id: roleId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/roles/:id', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    const roleId = req.params.id;
+    const { name, description, permissions = {}, status = 'ACTIVE' } = req.body;
+    if (!name) return res.status(400).json({ error: 'Role name is required' });
+
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const role = store.roles.find(r => r.id === roleId);
+      if (!role) return res.status(404).json({ error: 'Role not found' });
+      role.name = name;
+      role.description = description;
+      role.permissions = permissions;
+      role.status = status;
+      role.updated_at = now;
+    } else {
+      await db.query(`
+        UPDATE roles
+        SET name = $1, description = $2, permissions = $3, status = $4, updated_at = NOW()
+        WHERE id = $5
+      `, [name, description, JSON.stringify(permissions), status, roleId]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'ROLE_UPDATED',
+      entityType: 'ROLE',
+      entityId: roleId,
+      description: `Updated role "${name}" permissions configuration.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Role updated successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

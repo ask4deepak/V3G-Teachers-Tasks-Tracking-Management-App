@@ -1981,7 +1981,7 @@ async function renderTeacherWiseReport(container) {
   `;
 }
 
-// Detailed Response Report
+// Detailed Response Report with Sorting, Filtering, and Dynamic Question Columns
 async function renderDetailedResponseReport(container) {
   const tasks = await api('/tasks');
   const selectedTaskId = state.filters.detailedTaskId || (tasks[0] ? tasks[0].id : null);
@@ -1991,48 +1991,169 @@ async function renderDetailedResponseReport(container) {
     return;
   }
 
-  const report = await api(`/reports/task-wise?task_id=${selectedTaskId}`);
-  const { task, rows } = report;
-  const questions = typeof task.questions === 'string' ? JSON.parse(task.questions) : task.questions;
+  const campuses = await api('/campuses');
+  const reportData = await api(`/reports/detailed-response?task_id=${selectedTaskId}`);
+  const { task, questions, rows } = reportData;
+
+  // Initialize selected columns in state if not present
+  if (!state.filters.detailedColumns) {
+    state.filters.detailedColumns = {
+      display_name: true,
+      employee_code: true,
+      campus_name: true,
+      department_names: true,
+      designation_name: true,
+      class_teacher_status: true,
+      due_at: true,
+      submitted_at: true,
+      status: true
+    };
+    questions.forEach(q => { state.filters.detailedColumns[`q_${q.key}`] = true; });
+  }
+
+  // Filter rows by campus, status, search
+  const campusFilter = state.filters.detailedCampus || '';
+  const statusFilter = state.filters.detailedStatus || '';
+  const searchFilter = (state.filters.detailedSearch || '').toLowerCase();
+
+  let filteredRows = rows.filter(r => {
+    if (campusFilter && r.campus_id !== campusFilter) return false;
+    if (statusFilter && r.status !== statusFilter) return false;
+    if (searchFilter) {
+      const match = (r.display_name || '').toLowerCase().includes(searchFilter) ||
+                    (r.email || '').toLowerCase().includes(searchFilter) ||
+                    (r.employee_code || '').toLowerCase().includes(searchFilter);
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  // Sort rows
+  const sortBy = state.filters.detailedSortBy || 'display_name';
+  const sortDir = state.filters.detailedSortDir || 'asc';
+
+  filteredRows.sort((a, b) => {
+    let valA, valB;
+    if (sortBy.startsWith('q_')) {
+      const qKey = sortBy.substring(2);
+      valA = a.answers && a.answers[qKey] !== undefined ? String(a.answers[qKey]) : '';
+      valB = b.answers && b.answers[qKey] !== undefined ? String(b.answers[qKey]) : '';
+    } else {
+      valA = a[sortBy] !== undefined && a[sortBy] !== null ? String(a[sortBy]) : '';
+      valB = b[sortBy] !== undefined && b[sortBy] !== null ? String(b[sortBy]) : '';
+    }
+    const cmp = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
 
   container.innerHTML = `
+    <!-- Top Filter & Task Selection Bar -->
     <div class="filter-bar">
       <div style="display:flex; align-items:center; gap:8px;">
         <label><strong>Task:</strong></label>
-        <select class="form-select" onchange="state.filters.detailedTaskId = this.value; loadCurrentView();">
+        <select class="form-select" onchange="state.filters.detailedTaskId = this.value; state.filters.detailedColumns = null; loadCurrentView();">
           ${tasks.map(t => `<option value="${t.id}" ${t.id === selectedTaskId ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
         </select>
       </div>
 
-      <div style="margin-left:auto;">
-        <button class="btn btn-secondary btn-sm" onclick="exportTaskResponses('${task.id}')">
-          <i class="fa-solid fa-file-excel"></i> Export Detailed Excel
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.detailedCampus = this.value; loadCurrentView();">
+          <option value="">All Campuses</option>
+          ${campuses.map(c => `<option value="${c.id}" ${c.id === campusFilter ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.detailedStatus = this.value; loadCurrentView();">
+          <option value="">All Statuses</option>
+          <option value="SUBMITTED_ON_TIME" ${statusFilter === 'SUBMITTED_ON_TIME' ? 'selected' : ''}>Submitted On Time</option>
+          <option value="SUBMITTED_LATE" ${statusFilter === 'SUBMITTED_LATE' ? 'selected' : ''}>Submitted Late</option>
+          <option value="IN_PROGRESS" ${statusFilter === 'IN_PROGRESS' ? 'selected' : ''}>In Progress (Draft)</option>
+          <option value="OVERDUE" ${statusFilter === 'OVERDUE' ? 'selected' : ''}>Overdue</option>
+          <option value="NOT_STARTED" ${statusFilter === 'NOT_STARTED' ? 'selected' : ''}>Not Started</option>
+        </select>
+      </div>
+
+      <div class="search-input-wrapper">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" class="form-input" placeholder="Search teacher, email, code..." value="${escapeHtml(state.filters.detailedSearch || '')}" oninput="state.filters.detailedSearch = this.value; loadCurrentView();" />
+      </div>
+
+      <div style="margin-left:auto; display:flex; gap:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="toggleColumnCustomizer()">
+          <i class="fa-solid fa-sliders"></i> Customize Columns
+        </button>
+        <button class="btn btn-primary btn-sm" onclick="exportTaskResponses('${task.id}')">
+          <i class="fa-solid fa-file-excel"></i> Download Excel
         </button>
       </div>
     </div>
 
+    <!-- Column Customizer Dropdown Drawer (Collapsible) -->
+    <div id="column-customizer-panel" style="display:none; background:var(--bg-surface); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:16px; margin-bottom:16px;">
+      <h4 style="margin-bottom:12px;"><i class="fa-solid fa-table-columns text-primary"></i> Toggle Report Columns</h4>
+      <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:8px;">
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('display_name', this.checked)" ${state.filters.detailedColumns.display_name ? 'checked' : ''} /> Teacher Name</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('employee_code', this.checked)" ${state.filters.detailedColumns.employee_code ? 'checked' : ''} /> Employee Code</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('campus_name', this.checked)" ${state.filters.detailedColumns.campus_name ? 'checked' : ''} /> Campus</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('department_names', this.checked)" ${state.filters.detailedColumns.department_names ? 'checked' : ''} /> Department</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('designation_name', this.checked)" ${state.filters.detailedColumns.designation_name ? 'checked' : ''} /> Designation</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('class_teacher_status', this.checked)" ${state.filters.detailedColumns.class_teacher_status ? 'checked' : ''} /> Class Teacher</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('due_at', this.checked)" ${state.filters.detailedColumns.due_at ? 'checked' : ''} /> Deadline</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('submitted_at', this.checked)" ${state.filters.detailedColumns.submitted_at ? 'checked' : ''} /> Submitted Date</label>
+        <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('status', this.checked)" ${state.filters.detailedColumns.status ? 'checked' : ''} /> Status</label>
+        ${questions.map(q => `
+          <label class="checkbox-label" title="${escapeHtml(q.label)}">
+            <input type="checkbox" onchange="toggleDetailedCol('q_${q.key}', this.checked)" ${state.filters.detailedColumns[`q_${q.key}`] ? 'checked' : ''} />
+            <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">[Q] ${escapeHtml(q.label)}</span>
+          </label>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- Data Grid with Interactive Sorting Headers -->
     <div class="card">
       <div class="card-header">
-        <h2><i class="fa-solid fa-table-columns"></i> Joined Response Grid (${rows.length} Records)</h2>
+        <h2><i class="fa-solid fa-table-columns"></i> Task Response Report (${filteredRows.length} Records)</h2>
+        <span style="font-size:0.8rem; color:var(--text-muted);"><i class="fa-solid fa-arrow-down-a-z"></i> Click any column header to sort</span>
       </div>
       <div class="card-body">
         <div class="table-responsive">
           <table class="table">
             <thead>
               <tr>
-                <th>Teacher</th>
-                <th>Campus</th>
-                <th>Status</th>
-                ${questions.map(q => `<th>${escapeHtml(q.label)}</th>`).join('')}
+                ${state.filters.detailedColumns.display_name ? renderSortableHeader('display_name', 'Teacher Name', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.employee_code ? renderSortableHeader('employee_code', 'Emp Code', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.campus_name ? renderSortableHeader('campus_name', 'Campus', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.department_names ? renderSortableHeader('department_names', 'Department', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.designation_name ? renderSortableHeader('designation_name', 'Designation', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.class_teacher_status ? renderSortableHeader('class_teacher_status', 'Class Teacher', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.due_at ? renderSortableHeader('due_at', 'Deadline', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.submitted_at ? renderSortableHeader('submitted_at', 'Submitted Date', sortBy, sortDir) : ''}
+                ${state.filters.detailedColumns.status ? renderSortableHeader('status', 'Status', sortBy, sortDir) : ''}
+                ${questions.map(q => state.filters.detailedColumns[`q_${q.key}`] ? renderSortableHeader(`q_${q.key}`, q.label, sortBy, sortDir) : '').join('')}
               </tr>
             </thead>
             <tbody>
-              ${rows.map(r => `
+              ${filteredRows.length === 0 ? `
+                <tr><td colspan="15" class="empty-state">No response records match your active filters.</td></tr>
+              ` : filteredRows.map(r => `
                 <tr>
-                  <td><strong>${escapeHtml(r.display_name)}</strong></td>
-                  <td>${escapeHtml(r.campus_name)}</td>
-                  <td><span class="badge badge-${r.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(r.status)}</span></td>
-                  ${questions.map(q => `<td>${escapeHtml(r.answers[q.key] !== undefined ? String(r.answers[q.key]) : '-')}</td>`).join('')}
+                  ${state.filters.detailedColumns.display_name ? `<td><strong>${escapeHtml(r.display_name)}</strong><div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(r.email)}</div></td>` : ''}
+                  ${state.filters.detailedColumns.employee_code ? `<td>${escapeHtml(r.employee_code || 'N/A')}</td>` : ''}
+                  ${state.filters.detailedColumns.campus_name ? `<td>${escapeHtml(r.campus_name)}</td>` : ''}
+                  ${state.filters.detailedColumns.department_names ? `<td>${escapeHtml(r.department_names || 'N/A')}</td>` : ''}
+                  ${state.filters.detailedColumns.designation_name ? `<td>${escapeHtml(r.designation_name || 'Teacher')}</td>` : ''}
+                  ${state.filters.detailedColumns.class_teacher_status ? `<td>${r.class_teacher_status === 'Yes' ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>` : ''}
+                  ${state.filters.detailedColumns.due_at ? `<td>${formatDateTime(r.due_at)}</td>` : ''}
+                  ${state.filters.detailedColumns.submitted_at ? `<td>${r.submitted_at ? formatDateTime(r.submitted_at) : '<span class="text-muted">Not Submitted</span>'}</td>` : ''}
+                  ${state.filters.detailedColumns.status ? `<td><span class="badge badge-${r.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(r.status)}</span></td>` : ''}
+                  ${questions.map(q => {
+                    if (!state.filters.detailedColumns[`q_${q.key}`]) return '';
+                    let ans = r.answers && r.answers[q.key] !== undefined && r.answers[q.key] !== null ? r.answers[q.key] : '';
+                    if (Array.isArray(ans)) ans = ans.join(', ');
+                    return `<td>${ans ? escapeHtml(String(ans)) : '<span class="text-muted">-</span>'}</td>`;
+                  }).join('')}
                 </tr>
               `).join('')}
             </tbody>
@@ -2041,6 +2162,31 @@ async function renderDetailedResponseReport(container) {
       </div>
     </div>
   `;
+}
+
+function renderSortableHeader(key, label, currentSort, currentDir) {
+  const isSorted = currentSort === key;
+  const icon = isSorted ? (currentDir === 'asc' ? 'fa-arrow-up-short-wide' : 'fa-arrow-down-wide-short') : 'fa-sort';
+  const newDir = isSorted && currentDir === 'asc' ? 'desc' : 'asc';
+  return `
+    <th style="cursor:pointer; user-select:none;" onclick="state.filters.detailedSortBy = '${key}'; state.filters.detailedSortDir = '${newDir}'; loadCurrentView();">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span>${escapeHtml(label)}</span>
+        <i class="fa-solid ${icon}" style="font-size:0.75rem; color:${isSorted ? 'var(--primary)' : 'var(--text-subtle)'};"></i>
+      </div>
+    </th>
+  `;
+}
+
+function toggleColumnCustomizer() {
+  const p = document.getElementById('column-customizer-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+function toggleDetailedCol(colKey, isChecked) {
+  if (!state.filters.detailedColumns) state.filters.detailedColumns = {};
+  state.filters.detailedColumns[colKey] = isChecked;
+  loadCurrentView();
 }
 
 // ============================================================================
@@ -2054,6 +2200,7 @@ async function renderUsersDirectory(container) {
   ]);
 
   const canManageAccess = state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN';
+  const canEditUsers = hasPermission('users.edit') || canManageAccess;
 
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
@@ -2073,11 +2220,12 @@ async function renderUsersDirectory(container) {
               <tr>
                 <th>Name</th>
                 <th>Email</th>
+                <th>Employee Code</th>
                 <th>User Type</th>
                 <th>Campus</th>
                 <th>Class Teacher</th>
                 <th>Status</th>
-                ${canManageAccess ? `<th>Role & Access</th>` : ''}
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -2085,17 +2233,25 @@ async function renderUsersDirectory(container) {
                 <tr>
                   <td><strong>${escapeHtml(u.display_name)}</strong></td>
                   <td>${escapeHtml(u.email)}</td>
+                  <td><code>${escapeHtml(u.employee_code || 'N/A')}</code></td>
                   <td><span class="badge ${u.user_type === 'SUPER_ADMIN' ? 'badge-overdue' : (u.user_type === 'ADMIN' ? 'badge-in-progress' : 'badge-not-started')}">${u.user_type}</span></td>
                   <td>${escapeHtml(u.campus_name)}</td>
                   <td>${u.class_teacher_status ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>
-                  <td><span class="badge badge-${u.status.toLowerCase()}">${u.status}</span></td>
-                  ${canManageAccess ? `
-                    <td>
-                      <button class="btn btn-secondary btn-sm" onclick="openManageUserAccessModal('${u.id}')">
-                        <i class="fa-solid fa-key"></i> Assign Role & Campus
-                      </button>
-                    </td>
-                  ` : ''}
+                  <td><span class="badge badge-${(u.status || 'ACTIVE').toLowerCase()}">${u.status || 'ACTIVE'}</span></td>
+                  <td>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                      ${canEditUsers ? `
+                        <button class="btn btn-outline btn-sm" onclick="openEditUserModal('${u.id}')" title="Edit Teacher Details">
+                          <i class="fa-solid fa-pen-to-square"></i> Edit
+                        </button>
+                      ` : ''}
+                      ${canManageAccess ? `
+                        <button class="btn btn-secondary btn-sm" onclick="openManageUserAccessModal('${u.id}')" title="Assign Role & Campus Scope">
+                          <i class="fa-solid fa-key"></i> Role & Campus
+                        </button>
+                      ` : ''}
+                    </div>
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2104,6 +2260,180 @@ async function renderUsersDirectory(container) {
       </div>
     </div>
   `;
+}
+
+async function openEditUserModal(userId) {
+  const [userData, campuses, departments, designations, subjects, categories] = await Promise.all([
+    api(`/users/${userId}`),
+    api('/campuses'),
+    api('/masters?master_type=DEPARTMENT'),
+    api('/masters?master_type=DESIGNATION'),
+    api('/masters?master_type=SUBJECT'),
+    api('/masters?master_type=CATEGORY')
+  ]);
+
+  const { user, attributes } = userData;
+  const userAttrIds = new Set(attributes.map(a => a.master_value_id));
+
+  // Extract department, designation, subjects, categories
+  const currentDept = attributes.find(a => a.master_type === 'DEPARTMENT');
+  const currentDesig = attributes.find(a => a.master_type === 'DESIGNATION');
+  const currentDeptId = currentDept ? currentDept.master_value_id : '';
+  const currentDesigId = currentDesig ? currentDesig.master_value_id : '';
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Edit Faculty Member</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(user.display_name)} (${escapeHtml(user.email)})</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-edit-user" onsubmit="handleSaveUser(event, '${userId}')">
+        
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label>First Name <span class="text-danger">*</span></label>
+            <input type="text" name="first_name" class="form-input" value="${escapeHtml(user.first_name || '')}" required />
+          </div>
+          <div class="form-group">
+            <label>Last Name <span class="text-danger">*</span></label>
+            <input type="text" name="last_name" class="form-input" value="${escapeHtml(user.last_name || '')}" required />
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label>Email Address</label>
+            <input type="email" name="email" class="form-input" value="${escapeHtml(user.email || '')}" disabled title="Email is managed via system administration" />
+          </div>
+          <div class="form-group">
+            <label>Phone Number</label>
+            <input type="text" name="phone" class="form-input" value="${escapeHtml(user.phone || '')}" placeholder="+91 9876543210" />
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label>Employee Code</label>
+            <input type="text" name="employee_code" class="form-input" value="${escapeHtml(user.employee_code || '')}" placeholder="e.g. EMP_TC10" />
+          </div>
+          <div class="form-group">
+            <label>Account Status <span class="text-danger">*</span></label>
+            <select name="status" class="form-select" required>
+              <option value="ACTIVE" ${user.status === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+              <option value="INACTIVE" ${user.status === 'INACTIVE' ? 'selected' : ''}>INACTIVE</option>
+              <option value="SUSPENDED" ${user.status === 'SUSPENDED' ? 'selected' : ''}>SUSPENDED</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label>Primary Campus <span class="text-danger">*</span></label>
+            <select name="campus_id" class="form-select" required>
+              ${campuses.map(c => `<option value="${c.id}" ${c.id === user.campus_id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Designation</label>
+            <select name="designation_id" class="form-select">
+              <option value="">Select Designation...</option>
+              ${designations.map(d => `<option value="${d.id}" ${d.id === currentDesigId ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Department</label>
+          <select name="department_id" class="form-select">
+            <option value="">Select Primary Department...</option>
+            ${departments.map(d => `<option value="${d.id}" ${d.id === currentDeptId ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="class_teacher_status" value="true" ${user.class_teacher_status ? 'checked' : ''} />
+            <strong>Class Teacher Appointment</strong>
+          </label>
+        </div>
+
+        <!-- Subjects -->
+        <div class="form-group">
+          <label><strong>Assigned Subjects</strong></label>
+          <div style="max-height: 120px; overflow-y:auto; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md); display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px;">
+            ${subjects.map(s => `
+              <label class="checkbox-label">
+                <input type="checkbox" name="subject_ids" value="${s.id}" ${userAttrIds.has(s.id) ? 'checked' : ''} />
+                ${escapeHtml(s.name)}
+              </label>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Categories -->
+        <div class="form-group">
+          <label><strong>Faculty Categories (e.g. Senior Wing, Primary Wing)</strong></label>
+          <div style="max-height: 100px; overflow-y:auto; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md); display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px;">
+            ${categories.map(c => `
+              <label class="checkbox-label">
+                <input type="checkbox" name="category_ids" value="${c.id}" ${userAttrIds.has(c.id) ? 'checked' : ''} />
+                ${escapeHtml(c.name)}
+              </label>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Password Reset -->
+        <div class="form-group">
+          <label>Reset Password (Optional - leave blank to keep existing password)</label>
+          <input type="password" name="password" class="form-input" placeholder="New Password..." />
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> Save Teacher Changes
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSaveUser(event, userId) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    first_name: formData.get('first_name'),
+    last_name: formData.get('last_name'),
+    phone: formData.get('phone'),
+    employee_code: formData.get('employee_code'),
+    status: formData.get('status'),
+    campus_id: formData.get('campus_id'),
+    designation_id: formData.get('designation_id') || null,
+    department_id: formData.get('department_id') || null,
+    class_teacher_status: formData.get('class_teacher_status') === 'true',
+    subject_ids: formData.getAll('subject_ids'),
+    category_ids: formData.getAll('category_ids')
+  };
+
+  const password = formData.get('password');
+  if (password) {
+    payload.password = password;
+  }
+
+  try {
+    const res = await api(`/users/${userId}`, { method: 'PUT', body: payload });
+    showToast(res.message || 'User updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Ignored
+  }
 }
 
 async function openManageUserAccessModal(userId) {
@@ -2296,6 +2626,8 @@ async function handleCreateUser(event) {
 // Admin Groups Management
 async function renderAdminGroups(container) {
   const groups = await api('/groups');
+  const canEdit = hasPermission('groups.edit') || state.user.isSuperAdmin;
+  const canManageMembers = hasPermission('groups.manage_members') || state.user.isSuperAdmin;
 
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
@@ -2319,6 +2651,7 @@ async function renderAdminGroups(container) {
                 <th>Approved Members</th>
                 <th>Join Requests Allowed</th>
                 <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -2329,7 +2662,21 @@ async function renderAdminGroups(container) {
                   <td>${escapeHtml(g.description || 'N/A')}</td>
                   <td><span class="badge badge-in-progress">${g.member_count} Members</span></td>
                   <td>${g.allow_join_requests ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>
-                  <td><span class="badge badge-active">${g.status}</span></td>
+                  <td><span class="badge badge-${(g.status || 'ACTIVE').toLowerCase()}">${g.status || 'ACTIVE'}</span></td>
+                  <td>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                      ${canManageMembers ? `
+                        <button class="btn btn-primary btn-sm" onclick="openManageGroupMembersModal('${g.id}')" title="Add / Remove Campus Teachers">
+                          <i class="fa-solid fa-user-group"></i> Manage Members (${g.member_count})
+                        </button>
+                      ` : ''}
+                      ${canEdit ? `
+                        <button class="btn btn-outline btn-sm" onclick="openEditGroupModal('${g.id}')" title="Edit Group Details">
+                          <i class="fa-solid fa-pen-to-square"></i> Edit
+                        </button>
+                      ` : ''}
+                    </div>
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2417,6 +2764,222 @@ async function handleCreateGroup(event) {
   }
 }
 
+async function openEditGroupModal(groupId) {
+  const [groups, campuses] = await Promise.all([
+    api('/groups'),
+    api('/campuses')
+  ]);
+  const group = groups.find(g => g.id === groupId);
+  if (!group) return showToast('Group not found', 'danger');
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Edit Group Details</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(group.name)}</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-edit-group" onsubmit="handleSaveGroup(event, '${groupId}')">
+        <div class="form-group">
+          <label>Group Name <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" value="${escapeHtml(group.name)}" required />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea name="description" class="form-textarea" placeholder="Group purpose...">${escapeHtml(group.description || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Campus <span class="text-danger">*</span></label>
+          <select name="campus_id" class="form-select" required>
+            ${campuses.map(c => `<option value="${c.id}" ${c.id === group.campus_id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Group Status <span class="text-danger">*</span></label>
+          <select name="status" class="form-select" required>
+            <option value="ACTIVE" ${group.status === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+            <option value="INACTIVE" ${group.status === 'INACTIVE' ? 'selected' : ''}>INACTIVE</option>
+            <option value="ARCHIVED" ${group.status === 'ARCHIVED' ? 'selected' : ''}>ARCHIVED</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="allow_join_requests" value="true" ${group.allow_join_requests ? 'checked' : ''} />
+            Allow Teachers to Request Membership
+          </label>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> Save Group Details
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSaveGroup(event, groupId) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    name: formData.get('name'),
+    description: formData.get('description'),
+    campus_id: formData.get('campus_id'),
+    status: formData.get('status'),
+    allow_join_requests: formData.get('allow_join_requests') === 'true'
+  };
+
+  try {
+    const res = await api(`/groups/${groupId}`, { method: 'PUT', body: payload });
+    showToast(res.message || 'Group updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
+// Manage Managed Campus Teachers Group Members
+async function openManageGroupMembersModal(groupId) {
+  const data = await api(`/groups/${groupId}/members`);
+  const { group, teachers } = data;
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Manage Group Members: ${escapeHtml(group.name)}</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">
+          Campus Teachers Directory (${escapeHtml(group.campus_name || 'Assigned Campus')}) • <strong>${teachers.filter(t => t.is_member).length} Active Members</strong>
+        </span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      
+      <!-- Quick Filter & Bulk Toolbar -->
+      <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md);">
+        <div class="search-input-wrapper" style="flex:1; min-width:200px;">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="group-member-search" class="form-input" placeholder="Search teacher by name or email..." oninput="filterGroupMembersTable()" />
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGroupMembers(true)">
+            <i class="fa-solid fa-check-double"></i> Select All
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGroupMembers(false)">
+            <i class="fa-solid fa-square-minus"></i> Deselect All
+          </button>
+        </div>
+      </div>
+
+      <!-- Campus Teachers Table -->
+      <form id="form-group-members" onsubmit="handleSaveGroupMembers(event, '${groupId}')">
+        <div class="table-responsive" style="max-height: 400px; overflow-y:auto; border:1px solid var(--border-color); border-radius:var(--radius-sm);">
+          <table class="table" id="group-members-table">
+            <thead>
+              <tr>
+                <th style="width: 40px; text-align:center;">Member?</th>
+                <th>Teacher Name & Email</th>
+                <th>Emp Code</th>
+                <th>Group Role</th>
+                <th>Current Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${teachers.length === 0 ? `
+                <tr><td colspan="5" class="empty-state">No teachers found in this campus.</td></tr>
+              ` : teachers.map(t => `
+                <tr class="group-member-row" data-search="${escapeHtml((t.display_name + ' ' + t.email + ' ' + (t.employee_code || '')).toLowerCase())}">
+                  <td style="text-align:center;">
+                    <input type="checkbox" class="group-member-checkbox" data-user-id="${t.id}" ${t.is_member ? 'checked' : ''} />
+                  </td>
+                  <td>
+                    <strong>${escapeHtml(t.display_name)}</strong>
+                    <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.email)}</div>
+                  </td>
+                  <td><code>${escapeHtml(t.employee_code || 'N/A')}</code></td>
+                  <td>
+                    <select class="form-select form-select-sm group-member-role" data-user-id="${t.id}" style="width: 140px;">
+                      <option value="MEMBER" ${t.membership_role === 'MEMBER' ? 'selected' : ''}>Member</option>
+                      <option value="GROUP_ADMIN" ${t.membership_role === 'GROUP_ADMIN' ? 'selected' : ''}>Group Admin</option>
+                    </select>
+                  </td>
+                  <td>
+                    ${t.is_member ? (t.membership_role === 'GROUP_ADMIN' ? '<span class="badge badge-active"><i class="fa-solid fa-crown"></i> Group Admin</span>' : '<span class="badge badge-in-progress">Approved Member</span>') : (t.status === 'PENDING' ? '<span class="badge badge-overdue">Request Pending</span>' : '<span class="badge badge-not-started">Not in Group</span>')}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
+          <span style="font-size:0.85rem; color:var(--text-muted);">
+            <i class="fa-solid fa-circle-info"></i> Adding teachers grants them group task assignments and group announcements.
+          </span>
+          <div style="display:flex; gap:12px;">
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">
+              <i class="fa-solid fa-check-double"></i> Save Group Membership
+            </button>
+          </div>
+        </div>
+      </form>
+
+    </div>
+  `;
+  openModal(html);
+}
+
+function filterGroupMembersTable() {
+  const query = (document.getElementById('group-member-search').value || '').toLowerCase();
+  const rows = document.querySelectorAll('.group-member-row');
+  rows.forEach(r => {
+    const text = r.getAttribute('data-search') || '';
+    r.style.display = text.includes(query) ? '' : 'none';
+  });
+}
+
+function toggleAllGroupMembers(check) {
+  const rows = document.querySelectorAll('.group-member-row');
+  rows.forEach(r => {
+    if (r.style.display !== 'none') {
+      const cb = r.querySelector('.group-member-checkbox');
+      if (cb) cb.checked = check;
+    }
+  });
+}
+
+async function handleSaveGroupMembers(event, groupId) {
+  event.preventDefault();
+  const checkboxes = document.querySelectorAll('.group-member-checkbox:checked');
+  const members = [];
+
+  checkboxes.forEach(cb => {
+    const userId = cb.getAttribute('data-user-id');
+    const roleSelect = document.querySelector(`.group-member-role[data-user-id="${userId}"]`);
+    const membership_role = roleSelect ? roleSelect.value : 'MEMBER';
+    members.push({ user_id: userId, membership_role });
+  });
+
+  try {
+    const res = await api(`/groups/${groupId}/members`, {
+      method: 'POST',
+      body: { members }
+    });
+    showToast(res.message || 'Group members updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
 // Group Joining Requests Review
 async function renderGroupRequests(container) {
   const requests = await api('/group-requests');
@@ -2495,6 +3058,7 @@ async function reviewGroupRequest(id, action) {
 async function renderMasterData(container) {
   const currentTab = state.filters.masterTab || 'DEPARTMENT';
   const masters = await api(`/masters?master_type=${currentTab}`);
+  const canEdit = hasPermission('masters.edit') || state.user.isSuperAdmin;
 
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
@@ -2524,7 +3088,9 @@ async function renderMasterData(container) {
                 <th>Name</th>
                 <th>Code</th>
                 <th>Campus Scope</th>
+                <th>Sort Order</th>
                 <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -2533,7 +3099,15 @@ async function renderMasterData(container) {
                   <td><strong>${escapeHtml(m.name)}</strong></td>
                   <td><code>${escapeHtml(m.code || 'N/A')}</code></td>
                   <td>${m.campus_name ? escapeHtml(m.campus_name) : '<span class="badge badge-in-progress">Global (All Campuses)</span>'}</td>
-                  <td><span class="badge badge-active">${m.status}</span></td>
+                  <td>${m.sort_order || 0}</td>
+                  <td><span class="badge badge-${(m.status || 'ACTIVE').toLowerCase()}">${m.status || 'ACTIVE'}</span></td>
+                  <td>
+                    ${canEdit ? `
+                      <button class="btn btn-outline btn-sm" onclick="openEditMasterModal('${m.id}', '${currentTab}', '${escapeHtml(m.name).replace(/'/g, "\\'")}', '${escapeHtml(m.code || '').replace(/'/g, "\\'")}', '${m.campus_id || ''}', ${m.sort_order || 0}, '${m.status || 'ACTIVE'}')">
+                        <i class="fa-solid fa-pen-to-square"></i> Edit
+                      </button>
+                    ` : ''}
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2596,6 +3170,80 @@ async function handleCreateMaster(event, masterType) {
     loadCurrentView();
   } catch {
     // Ignored
+  }
+}
+
+async function openEditMasterModal(masterId, masterType, name, code, campusId, sortOrder, status) {
+  const campuses = await api('/campuses');
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Edit ${masterType} Master</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(name)}</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-edit-master" onsubmit="handleSaveMaster(event, '${masterId}')">
+        <div class="form-group">
+          <label>Name <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" value="${escapeHtml(name)}" required />
+        </div>
+        <div class="form-group">
+          <label>Code</label>
+          <input type="text" name="code" class="form-input" value="${escapeHtml(code || '')}" />
+        </div>
+        <div class="form-group">
+          <label>Campus Scope</label>
+          <select name="campus_id" class="form-select">
+            <option value="" ${!campusId ? 'selected' : ''}>Global (All Campuses)</option>
+            ${campuses.map(c => `<option value="${c.id}" ${c.id === campusId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label>Sort Order</label>
+            <input type="number" name="sort_order" class="form-input" value="${sortOrder}" />
+          </div>
+          <div class="form-group">
+            <label>Status <span class="text-danger">*</span></label>
+            <select name="status" class="form-select" required>
+              <option value="ACTIVE" ${status === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+              <option value="INACTIVE" ${status === 'INACTIVE' ? 'selected' : ''}>INACTIVE</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> Save Master
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSaveMaster(event, masterId) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    name: formData.get('name'),
+    code: formData.get('code'),
+    campus_id: formData.get('campus_id') || null,
+    sort_order: parseInt(formData.get('sort_order'), 10) || 0,
+    status: formData.get('status')
+  };
+
+  try {
+    const res = await api(`/masters/${masterId}`, { method: 'PUT', body: payload });
+    showToast(res.message || 'Master updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
   }
 }
 
@@ -2785,15 +3433,131 @@ async function renderAuditLogs(container) {
   `;
 }
 
-// Roles & Permissions Matrix
+// Roles & Permissions Matrix Management
+const SYSTEM_PERMISSION_GROUPS = [
+  {
+    module: 'Dashboard',
+    icon: 'fa-gauge-high',
+    permissions: [
+      { key: 'dashboard.view_admin', label: 'View Administrator Overview Dashboard' }
+    ]
+  },
+  {
+    module: 'Task Management',
+    icon: 'fa-list-check',
+    permissions: [
+      { key: 'tasks.view', label: 'View Tasks' },
+      { key: 'tasks.create', label: 'Create New Tasks' },
+      { key: 'tasks.edit', label: 'Edit Existing Tasks' },
+      { key: 'tasks.delete_draft', label: 'Delete Draft Tasks' },
+      { key: 'tasks.publish', label: 'Publish Tasks to Audience' },
+      { key: 'tasks.assign', label: 'Assign Teachers & Groups' },
+      { key: 'tasks.archive', label: 'Archive Completed Tasks' },
+      { key: 'tasks.send_reminder', label: 'Send Manual Task Reminders' },
+      { key: 'tasks.export', label: 'Export Task Data' }
+    ]
+  },
+  {
+    module: 'Recurring Tasks',
+    icon: 'fa-repeat',
+    permissions: [
+      { key: 'recurring_tasks.view', label: 'View Recurring Task Templates' },
+      { key: 'recurring_tasks.create', label: 'Create Recurring Templates' },
+      { key: 'recurring_tasks.edit', label: 'Edit Recurring Templates' },
+      { key: 'recurring_tasks.pause', label: 'Pause/Resume Templates' },
+      { key: 'recurring_tasks.publish', label: 'Publish Recurring Schedules' }
+    ]
+  },
+  {
+    module: 'Institutional Reports',
+    icon: 'fa-chart-pie',
+    permissions: [
+      { key: 'reports.task_wise.view', label: 'View Task-Wise Report' },
+      { key: 'reports.task_wise.export', label: 'Export Task-Wise Report' },
+      { key: 'reports.teacher_wise.view', label: 'View Teacher-Wise Performance' },
+      { key: 'reports.teacher_wise.export', label: 'Export Teacher-Wise Performance' },
+      { key: 'reports.detailed.view', label: 'View Detailed Responses Report' },
+      { key: 'reports.detailed.export', label: 'Export Detailed Responses Report' }
+    ]
+  },
+  {
+    module: 'Campus Groups',
+    icon: 'fa-users-rectangle',
+    permissions: [
+      { key: 'groups.view', label: 'View Campus Groups' },
+      { key: 'groups.create', label: 'Create Groups' },
+      { key: 'groups.edit', label: 'Edit Group Details' },
+      { key: 'groups.manage_members', label: 'Manage Group Members' },
+      { key: 'groups.approve_requests', label: 'Review & Approve Joining Requests' },
+      { key: 'groups.delete_or_deactivate', label: 'Deactivate / Archive Groups' }
+    ]
+  },
+  {
+    module: 'Faculty & Staff Directory',
+    icon: 'fa-chalkboard-user',
+    permissions: [
+      { key: 'users.view', label: 'View Faculty Directory' },
+      { key: 'users.create', label: 'Add New Faculty Member' },
+      { key: 'users.edit', label: 'Edit Faculty Profiles & Attributes' },
+      { key: 'users.deactivate', label: 'Deactivate / Suspend Users' },
+      { key: 'users.import', label: 'Import Faculty Excel/CSV' },
+      { key: 'users.export', label: 'Export Faculty Data' }
+    ]
+  },
+  {
+    module: 'Master Data Management',
+    icon: 'fa-layer-group',
+    permissions: [
+      { key: 'masters.view', label: 'View Master Data' },
+      { key: 'masters.create', label: 'Create Master Values' },
+      { key: 'masters.edit', label: 'Edit Master Values' },
+      { key: 'masters.deactivate', label: 'Deactivate Master Values' },
+      { key: 'masters.import', label: 'Import Master Data' },
+      { key: 'masters.export', label: 'Export Master Data' }
+    ]
+  },
+  {
+    module: 'Institutional Audit Trail',
+    icon: 'fa-shield-halved',
+    permissions: [
+      { key: 'audit.view', label: 'View Audit Logs' },
+      { key: 'audit.export', label: 'Export Audit Logs' }
+    ]
+  },
+  {
+    module: 'Imports & Exports',
+    icon: 'fa-file-excel',
+    permissions: [
+      { key: 'imports.execute', label: 'Execute Data Imports' },
+      { key: 'exports.execute', label: 'Execute Data Exports' }
+    ]
+  },
+  {
+    module: 'System Roles & Access Control',
+    icon: 'fa-key',
+    permissions: [
+      { key: 'roles.view', label: 'View Roles & Permissions' },
+      { key: 'roles.manage', label: 'Create & Edit Custom Roles' },
+      { key: 'user_access.manage', label: 'Assign Roles & Campus Scope' }
+    ]
+  }
+];
+
 async function renderRolesManagement(container) {
   const roles = await api('/roles');
+  const canManageRoles = state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN';
 
   container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+      <h2><i class="fa-solid fa-key"></i> System Roles & Permission Matrix</h2>
+      ${canManageRoles ? `
+        <button class="btn btn-primary" onclick="openRoleModal()">
+          <i class="fa-solid fa-plus"></i> Create Custom Role
+        </button>
+      ` : ''}
+    </div>
+
     <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-key"></i> System Roles & Permission Matrix</h2>
-      </div>
       <div class="card-body">
         <div class="table-responsive">
           <table class="table">
@@ -2802,18 +3566,28 @@ async function renderRolesManagement(container) {
                 <th>Role Name</th>
                 <th>Description</th>
                 <th>Type</th>
-                <th>Permissions Count</th>
+                <th>Active Permissions</th>
+                <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               ${roles.map(r => {
-                const count = Object.keys(r.permissions || {}).length;
+                const count = Object.keys(r.permissions || {}).filter(k => r.permissions[k]).length;
                 return `
                   <tr>
                     <td><strong>${escapeHtml(r.name)}</strong></td>
                     <td>${escapeHtml(r.description || 'N/A')}</td>
-                    <td>${r.is_system_role ? '<span class="badge badge-active">System Role</span>' : '<span class="badge badge-not-started">Custom</span>'}</td>
+                    <td>${r.is_system_role ? '<span class="badge badge-active">System Role</span>' : '<span class="badge badge-not-started">Custom Role</span>'}</td>
                     <td><span class="badge badge-in-progress">${count} Permission Keys</span></td>
+                    <td><span class="badge badge-${(r.status || 'ACTIVE').toLowerCase()}">${r.status || 'ACTIVE'}</span></td>
+                    <td>
+                      ${canManageRoles ? `
+                        <button class="btn btn-outline btn-sm" onclick="openRoleModal('${r.id}')" title="Edit Role & Permissions">
+                          <i class="fa-solid fa-pen-to-square"></i> Edit Permissions
+                        </button>
+                      ` : ''}
+                    </td>
                   </tr>
                 `;
               }).join('')}
@@ -2823,6 +3597,140 @@ async function renderRolesManagement(container) {
       </div>
     </div>
   `;
+}
+
+async function openRoleModal(roleId = null) {
+  let role = {
+    name: '',
+    description: '',
+    status: 'ACTIVE',
+    permissions: {},
+    is_system_role: false
+  };
+
+  if (roleId) {
+    const roles = await api('/roles');
+    const found = roles.find(r => r.id === roleId);
+    if (found) role = found;
+  }
+
+  const rolePerms = typeof role.permissions === 'string' ? JSON.parse(role.permissions || '{}') : (role.permissions || {});
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>${roleId ? 'Edit Role: ' + escapeHtml(role.name) : 'Create New Custom Role'}</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">
+          Configure granular permission switches for modules and administrative operations.
+        </span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-role" onsubmit="handleSaveRole(event, ${roleId ? `'${roleId}'` : 'null'})">
+        
+        <div style="display:grid; grid-template-columns: 2fr 1fr; gap:12px; margin-bottom:16px;">
+          <div class="form-group">
+            <label>Role Name <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-input" value="${escapeHtml(role.name)}" required placeholder="e.g. Department Head" />
+          </div>
+          <div class="form-group">
+            <label>Role Status <span class="text-danger">*</span></label>
+            <select name="status" class="form-select" required>
+              <option value="ACTIVE" ${role.status === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+              <option value="INACTIVE" ${role.status === 'INACTIVE' ? 'selected' : ''}>INACTIVE</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom:20px;">
+          <label>Role Description</label>
+          <input type="text" name="description" class="form-input" value="${escapeHtml(role.description || '')}" placeholder="Brief description of responsibilities..." />
+        </div>
+
+        <!-- Permissions Matrix Grouped by Module -->
+        <h4 style="margin-bottom:12px; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+          <i class="fa-solid fa-shield-halved text-primary"></i> Module Permission Keys
+        </h4>
+
+        <div style="display:grid; grid-template-columns: 1fr; gap:16px; max-height:420px; overflow-y:auto; padding-right:6px;">
+          ${SYSTEM_PERMISSION_GROUPS.map((group, gIdx) => `
+            <div style="background:var(--border-subtle); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:12px 16px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <strong><i class="fa-solid ${group.icon} text-primary"></i> ${group.module}</strong>
+                <div style="display:flex; gap:8px;">
+                  <button type="button" class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px;" onclick="toggleRoleModulePermissions('group-${gIdx}', true)">All</button>
+                  <button type="button" class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px;" onclick="toggleRoleModulePermissions('group-${gIdx}', false)">None</button>
+                </div>
+              </div>
+              <div id="group-${gIdx}" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:8px;">
+                ${group.permissions.map(p => `
+                  <label class="checkbox-label" style="font-size:0.85rem;">
+                    <input type="checkbox" name="perm_${p.key}" class="role-perm-checkbox" ${rolePerms[p.key] ? 'checked' : ''} />
+                    <span>${escapeHtml(p.label)}</span>
+                  </label>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> ${roleId ? 'Update Role & Permissions' : 'Create Custom Role'}
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+function toggleRoleModulePermissions(groupId, checked) {
+  const container = document.getElementById(groupId);
+  if (container) {
+    const checkboxes = container.querySelectorAll('.role-perm-checkbox');
+    checkboxes.forEach(cb => cb.checked = checked);
+  }
+}
+
+async function handleSaveRole(event, roleId) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const name = formData.get('name');
+  const description = formData.get('description');
+  const status = formData.get('status');
+
+  const permissions = {};
+  for (const group of SYSTEM_PERMISSION_GROUPS) {
+    for (const p of group.permissions) {
+      if (formData.get(`perm_${p.key}`) === 'on') {
+        permissions[p.key] = true;
+      }
+    }
+  }
+
+  const payload = {
+    name,
+    description,
+    status,
+    permissions
+  };
+
+  try {
+    if (roleId) {
+      const res = await api(`/roles/${roleId}`, { method: 'PUT', body: payload });
+      showToast(res.message || 'Role updated successfully!', 'success');
+    } else {
+      const res = await api('/roles', { method: 'POST', body: payload });
+      showToast('Role created successfully!', 'success');
+    }
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
 }
 
 // ============================================================================

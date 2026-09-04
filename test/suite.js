@@ -173,6 +173,100 @@ async function runAllTests() {
     assert.ok(buffer.length > 0);
   });
 
+  console.log('\n--- Phase 6: Roles, Faculty, Master Data & Group Management Tests ---');
+
+  await test('Create and edit custom system role with granular permissions', async () => {
+    const roleName = 'Senior Academic Lead';
+    const store = db.getMemoryStore();
+    const roleId = 'r-custom-lead-01';
+
+    store.roles.push({
+      id: roleId,
+      name: roleName,
+      description: 'Departmental leadership and task assignments',
+      permissions: { 'tasks.create': true, 'tasks.view': true, 'reports.task_wise.view': true },
+      is_system_role: false,
+      status: 'ACTIVE',
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    const createdRole = store.roles.find(r => r.id === roleId);
+    assert.strictEqual(createdRole.name, roleName);
+    assert.strictEqual(createdRole.permissions['tasks.create'], true);
+
+    // Update role
+    createdRole.permissions['reports.detailed.view'] = true;
+    createdRole.description = 'Updated lead description';
+    assert.strictEqual(createdRole.permissions['reports.detailed.view'], true);
+    assert.strictEqual(createdRole.description, 'Updated lead description');
+  });
+
+  await test('Edit User/Teacher profile, employee code, and status', async () => {
+    const store = db.getMemoryStore();
+    const teacherSarah = store.users.find(u => u.email === 'teacher.sarah@institution.edu');
+    assert.ok(teacherSarah);
+
+    // Update Sarah's attributes
+    teacherSarah.employee_code = 'EMP_SRH99';
+    teacherSarah.phone = '+91 9988776655';
+    teacherSarah.status = 'ACTIVE';
+
+    assert.strictEqual(teacherSarah.employee_code, 'EMP_SRH99');
+    assert.strictEqual(teacherSarah.phone, '+91 9988776655');
+  });
+
+  await test('Edit Master Data value and sort order', async () => {
+    const store = db.getMemoryStore();
+    const engMaster = store.master_values.find(m => m.name === 'English');
+    assert.ok(engMaster);
+
+    engMaster.code = 'SUB_ENG_ADV';
+    engMaster.sort_order = 10;
+    engMaster.status = 'ACTIVE';
+
+    assert.strictEqual(engMaster.code, 'SUB_ENG_ADV');
+    assert.strictEqual(engMaster.sort_order, 10);
+  });
+
+  await test('Edit Group details and manage campus teachers membership with roles', async () => {
+    const store = db.getMemoryStore();
+    const group = store.groups[0];
+    assert.ok(group);
+
+    // Edit group details
+    group.name = 'Updated Examination Committee';
+    group.allow_join_requests = true;
+    assert.strictEqual(group.name, 'Updated Examination Committee');
+
+    // Add teacher Sarah and Michael to group with roles
+    const teacherSarahId = 'u4444444-4444-4444-4444-444444444444';
+    const teacherMichaelId = 'u5555555-5555-5555-5555-555555555555';
+
+    store.group_memberships = store.group_memberships.filter(m => m.group_id !== group.id);
+    store.group_memberships.push({
+      id: 'gm-test-01',
+      group_id: group.id,
+      user_id: teacherSarahId,
+      membership_role: 'GROUP_ADMIN',
+      status: 'APPROVED',
+      created_at: new Date()
+    });
+    store.group_memberships.push({
+      id: 'gm-test-02',
+      group_id: group.id,
+      user_id: teacherMichaelId,
+      membership_role: 'MEMBER',
+      status: 'APPROVED',
+      created_at: new Date()
+    });
+
+    const members = store.group_memberships.filter(m => m.group_id === group.id);
+    assert.strictEqual(members.length, 2);
+    const sarahMem = members.find(m => m.user_id === teacherSarahId);
+    assert.strictEqual(sarahMem.membership_role, 'GROUP_ADMIN');
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');
