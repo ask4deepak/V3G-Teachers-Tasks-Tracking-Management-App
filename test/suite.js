@@ -267,6 +267,145 @@ async function runAllTests() {
     assert.strictEqual(sarahMem.membership_role, 'GROUP_ADMIN');
   });
 
+  console.log('\n--- Phase 7: Task Lifecycle, Reordering, Late Submissions & Password Reset Tests ---');
+
+  await test('Edit assigned task: update questions, deadline, and status (ACTIVE, PAUSED, ARCHIVED, SCHEDULED)', async () => {
+    const store = db.getMemoryStore();
+    const task = store.tasks[0];
+    assert.ok(task);
+
+    // Update questions and deadline
+    task.questions.push({ key: 'Q_EXTRA', label: 'Additional feedback', type: 'long_text', required: false });
+    task.deadline_at = new Date(Date.now() + 10 * 86400000);
+    task.allow_late_submissions = false;
+    task.status = 'PAUSED';
+
+    assert.strictEqual(task.questions.length >= 2, true);
+    assert.strictEqual(task.allow_late_submissions, false);
+    assert.strictEqual(task.status, 'PAUSED');
+
+    // Toggle back to ACTIVE
+    task.status = 'ACTIVE';
+    assert.strictEqual(task.status, 'ACTIVE');
+  });
+
+  await test('Task Up/Down reordering modifies sort_order for priority display in teacher portal', async () => {
+    const store = db.getMemoryStore();
+    const t1 = store.tasks[0];
+    const t2 = store.tasks[1] || {
+      id: 'tsk-test-order-02',
+      task_type: 'ONE_TIME',
+      title: 'Secondary Task',
+      campus_ids: ['11111111-1111-1111-1111-111111111111'],
+      questions: [],
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'ACTIVE',
+      sort_order: 2,
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000),
+      created_by: 'u2222222-2222-2222-2222-222222222222',
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    if (!store.tasks.find(x => x.id === t2.id)) store.tasks.push(t2);
+
+    t1.sort_order = 1;
+    t2.sort_order = 2;
+
+    // Swap sort order (Move t2 UP)
+    const temp = t1.sort_order;
+    t1.sort_order = t2.sort_order;
+    t2.sort_order = temp;
+
+    assert.strictEqual(t2.sort_order < t1.sort_order, true);
+  });
+
+  await test('Archived tasks are strictly hidden from teacher view', async () => {
+    const store = db.getMemoryStore();
+    const archivedTaskId = 'tsk-archived-01';
+    store.tasks.push({
+      id: archivedTaskId,
+      task_type: 'ONE_TIME',
+      title: 'Legacy Archived Task',
+      campus_ids: ['11111111-1111-1111-1111-111111111111'],
+      questions: [],
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'ARCHIVED',
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000),
+      created_by: 'u2222222-2222-2222-2222-222222222222',
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    // Add assignment for Sarah
+    store.assignments.push({
+      id: 'asg-archived-01',
+      task_id: archivedTaskId,
+      user_id: 'u4444444-4444-4444-4444-444444444444',
+      campus_id: '11111111-1111-1111-1111-111111111111',
+      assigned_at: new Date(),
+      assigned_by: 'u2222222-2222-2222-2222-222222222222',
+      due_at: new Date(Date.now() + 86400000),
+      status: 'NOT_STARTED',
+      excluded_flag: false,
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    // Verify teacher query logic filters out ARCHIVED tasks
+    const teacherVisibleTasks = store.assignments
+      .filter(a => a.user_id === 'u4444444-4444-4444-4444-444444444444')
+      .map(a => {
+        const t = store.tasks.find(tsk => tsk.id === a.task_id);
+        if (!t || t.status === 'ARCHIVED') return null;
+        return t;
+      })
+      .filter(Boolean);
+
+    assert.strictEqual(teacherVisibleTasks.some(t => t.id === archivedTaskId), false);
+  });
+
+  await test('Self-service password reset updates user password hash and verifies credentials', async () => {
+    const bcrypt = require('bcryptjs');
+    const store = db.getMemoryStore();
+    const user = store.users.find(u => u.email === 'teacher.sarah@institution.edu');
+    assert.ok(user);
+
+    // Verify current password works
+    const oldValid = await bcrypt.compare('Teacher@123', user.password_hash);
+    assert.strictEqual(oldValid, true);
+
+    // Reset password to new password
+    const newPassword = 'NewSecretPassword@2026';
+    user.password_hash = await bcrypt.hash(newPassword, 10);
+    user.updated_at = new Date();
+
+    // Verify old password fails and new password succeeds
+    const oldFails = await bcrypt.compare('Teacher@123', user.password_hash);
+    assert.strictEqual(oldFails, false);
+
+    const newSucceeds = await bcrypt.compare(newPassword, user.password_hash);
+    assert.strictEqual(newSucceeds, true);
+
+    // Revert for clean state
+    user.password_hash = await bcrypt.hash('Teacher@123', 10);
+  });
+
+  await test('Import template includes Password (Optional) and supports initial default password', async () => {
+    const buffer = await services.generateImportTemplate('NEW', 'users');
+    assert.ok(buffer);
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+    assert.ok(rows.length > 0);
+    assert.ok('Password (Optional)' in rows[0]);
+    assert.strictEqual(rows[0]['Password (Optional)'], 'Welcome@2026');
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

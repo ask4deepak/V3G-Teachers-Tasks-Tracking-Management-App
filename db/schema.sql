@@ -120,7 +120,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     questions JSONB NOT NULL DEFAULT '[]'::jsonb,
     audience_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
     recipient_exclusions JSONB NOT NULL DEFAULT '[]'::jsonb,
-    status VARCHAR(50) NOT NULL DEFAULT 'DRAFT', -- 'DRAFT', 'PUBLISHED', 'CLOSED', 'ARCHIVED'
+    status VARCHAR(50) NOT NULL DEFAULT 'DRAFT', -- 'DRAFT', 'PUBLISHED', 'ACTIVE', 'SCHEDULED', 'PAUSED', 'ARCHIVED', 'CLOSED'
+    sort_order INT NOT NULL DEFAULT 0,
+    allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE,
     open_at TIMESTAMPTZ,
     deadline_at TIMESTAMPTZ,
     published_at TIMESTAMPTZ,

@@ -659,6 +659,10 @@ button, input, select, textarea {
 .badge-not-started { background-color: var(--border-subtle); color: var(--text-muted); }
 .badge-active { background-color: var(--success-bg); color: var(--success-text); }
 .badge-pending { background-color: var(--warning-bg); color: var(--warning-text); }
+.badge-scheduled { background-color: rgba(59, 130, 246, 0.15); color: #2563eb; }
+.badge-paused { background-color: rgba(234, 179, 8, 0.18); color: #ca8a04; }
+.badge-archived { background-color: var(--border-subtle); color: var(--text-muted); }
+.badge-draft { background-color: rgba(100, 116, 139, 0.15); color: #475569; }
 
 /* Empty State */
 .empty-state {

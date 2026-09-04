@@ -515,22 +515,45 @@ async function renderTeacherTasks(container) {
                 </tr>
               </thead>
               <tbody>
-                ${tasks.map(t => `
-                  <tr>
-                    <td>
-                      <strong>${escapeHtml(t.title)}</strong>
-                      ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin-top:3px;">${escapeHtml(t.description)}</p>` : ''}
-                    </td>
-                    <td>${formatDate(t.assigned_at)}</td>
-                    <td><strong>${formatDateTime(t.due_at)}</strong></td>
-                    <td><span class="badge badge-${t.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(t.status)}</span></td>
-                    <td>
-                      <button class="btn ${t.submitted_at ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
-                        <i class="fa-solid ${t.submitted_at ? 'fa-eye' : 'fa-pen-to-square'}"></i> ${t.submitted_at ? 'View Submission' : (t.draft_flag ? 'Resume Draft' : 'Complete Task')}
-                      </button>
-                    </td>
-                  </tr>
-                `).join('')}
+                ${tasks.map(t => {
+                  const now = new Date();
+                  const isScheduled = t.is_scheduled || (t.open_at && new Date(t.open_at) > now);
+                  const isPaused = t.task_status === 'PAUSED';
+                  const isPastDue = new Date(t.due_at) < now;
+                  const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
+                  const isLateBlocked = !t.allow_late_submissions && isPastDue && !isSubmitted;
+
+                  let statusBadge = `<span class="badge badge-${t.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(t.status)}</span>`;
+                  if (isScheduled) {
+                    statusBadge = `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled (${formatDateTime(t.open_at)})</span>`;
+                  } else if (isPaused) {
+                    statusBadge = `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused by Admin</span>`;
+                  } else if (isLateBlocked) {
+                    statusBadge = `<span class="badge badge-overdue"><i class="fa-solid fa-ban"></i> Closed (No Late Submissions)</span>`;
+                  }
+
+                  let actionBtn = `
+                    <button class="btn ${isSubmitted ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
+                      <i class="fa-solid ${isSubmitted ? 'fa-eye' : 'fa-pen-to-square'}"></i> ${isSubmitted ? 'View Submission' : (t.draft_flag ? 'Resume Draft' : (isScheduled ? 'View Details' : 'Complete Task'))}
+                    </button>
+                  `;
+
+                  return `
+                    <tr>
+                      <td>
+                        <strong>${escapeHtml(t.title)}</strong>
+                        ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin-top:3px;">${escapeHtml(t.description)}</p>` : ''}
+                      </td>
+                      <td>${formatDate(t.assigned_at)}</td>
+                      <td>
+                        <strong>${formatDateTime(t.due_at)}</strong>
+                        ${!t.allow_late_submissions ? `<div style="font-size:0.75rem; color:var(--danger); margin-top:2px;"><i class="fa-solid fa-lock"></i> Strict Deadline</div>` : ''}
+                      </td>
+                      <td>${statusBadge}</td>
+                      <td>${actionBtn}</td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
           </div>
@@ -666,6 +689,11 @@ async function openTaskSubmissionModal(taskId) {
   const questions = typeof task.questions === 'string' ? JSON.parse(task.questions) : (task.questions || []);
   const answers = submission ? submission.answers : {};
   const isSubmitted = submission && !submission.draft_flag;
+  const now = new Date();
+  const isScheduled = task.is_scheduled || (task.open_at && new Date(task.open_at) > now);
+  const isPaused = task.status === 'PAUSED';
+  const isPastDue = new Date(assignment.due_at) < now;
+  const isLateBlocked = !task.allow_late_submissions && isPastDue && !isSubmitted;
 
   const html = `
     <div class="card-header">
@@ -676,6 +704,27 @@ async function openTaskSubmissionModal(taskId) {
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <div class="card-body">
+      ${isScheduled ? `
+        <div style="background:rgba(59,130,246,0.1); border-left:4px solid var(--primary); padding:12px; margin-bottom:16px; border-radius:4px;">
+          <strong style="color:var(--primary);"><i class="fa-solid fa-clock"></i> Scheduled Task</strong>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">This task is scheduled to open on <strong>${formatDateTime(task.open_at)}</strong>. Responses cannot be submitted until then.</p>
+        </div>
+      ` : ''}
+
+      ${isPaused ? `
+        <div style="background:rgba(234,179,8,0.1); border-left:4px solid #ca8a04; padding:12px; margin-bottom:16px; border-radius:4px;">
+          <strong style="color:#ca8a04;"><i class="fa-solid fa-pause"></i> Task Paused</strong>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">This task has been temporarily paused by administration. Submissions are suspended.</p>
+        </div>
+      ` : ''}
+
+      ${isLateBlocked ? `
+        <div style="background:rgba(239,68,68,0.1); border-left:4px solid var(--danger); padding:12px; margin-bottom:16px; border-radius:4px;">
+          <strong style="color:var(--danger);"><i class="fa-solid fa-lock"></i> Late Submissions Closed</strong>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">The deadline has expired and late submissions are not allowed for this task.</p>
+        </div>
+      ` : ''}
+
       ${task.description ? `<p style="margin-bottom: 20px; color:var(--text-muted);">${escapeHtml(task.description)}</p>` : ''}
       
       <form id="form-task-submission">
@@ -685,11 +734,11 @@ async function openTaskSubmissionModal(taskId) {
               <strong>${idx + 1}. ${escapeHtml(q.label)}</strong>
               ${q.required ? `<span class="text-danger">*</span>` : ''}
             </label>
-            ${renderQuestionInput(q, answers[q.key], isSubmitted)}
+            ${renderQuestionInput(q, answers[q.key], isSubmitted || isScheduled || isPaused || isLateBlocked)}
           </div>
         `).join('')}
 
-        ${!isSubmitted ? `
+        ${(!isSubmitted && !isScheduled && !isPaused && !isLateBlocked) ? `
           <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
             <button type="button" class="btn btn-secondary" onclick="submitTaskResponse('${taskId}', true)">
               <i class="fa-regular fa-floppy-disk"></i> Save Draft
@@ -965,6 +1014,35 @@ async function renderMyProfile(container) {
         </form>
       </div>
     </div>
+
+    <!-- Self-Service Password Reset Card -->
+    <div class="card" style="max-width: 800px; margin: 24px auto 0;">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-key text-primary"></i> Change Account Password</h2>
+      </div>
+      <div class="card-body">
+        <form id="form-change-password" onsubmit="handlePasswordReset(event)">
+          <div class="form-group">
+            <label>Current Password <span class="text-danger">*</span></label>
+            <input type="password" name="current_password" class="form-input" required placeholder="Enter current password" />
+          </div>
+          <div class="form-group">
+            <label>New Password <span class="text-danger">*</span></label>
+            <input type="password" name="new_password" class="form-input" required minlength="6" placeholder="Enter new password (min 6 characters)" />
+          </div>
+          <div class="form-group">
+            <label>Confirm New Password <span class="text-danger">*</span></label>
+            <input type="password" name="confirm_password" class="form-input" required minlength="6" placeholder="Confirm new password" />
+          </div>
+
+          <div style="margin-top: 24px;">
+            <button type="submit" class="btn btn-primary">
+              <i class="fa-solid fa-lock"></i> Update Password
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   `;
 }
 
@@ -990,6 +1068,29 @@ async function handleProfileSubmit(event) {
   } catch {
     // Ignored
   }
+}
+
+async function handlePasswordReset(event) {
+  event.preventDefault();
+  const form = event.target;
+  const formData = new FormData(form);
+
+  const current_password = formData.get('current_password');
+  const new_password = formData.get('new_password');
+  const confirm_password = formData.get('confirm_password');
+
+  if (new_password !== confirm_password) {
+    return showToast('New passwords do not match', 'warning');
+  }
+
+  try {
+    const res = await api('/profile/password', {
+      method: 'PUT',
+      body: { current_password, new_password, confirm_password }
+    });
+    showToast(res.message || 'Password updated successfully!', 'success');
+    form.reset();
+  } catch {}
 }
 
 // ============================================================================
@@ -1116,7 +1217,7 @@ async function renderAdminTasks(container) {
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
       <h2><i class="fa-solid fa-list-check"></i> Tasks Directory</h2>
       ${hasPermission('tasks.create') ? `
-        <button class="btn btn-primary" onclick="navigateTo('task-builder')">
+        <button class="btn btn-primary" onclick="state.taskBuilder = null; navigateTo('task-builder')">
           <i class="fa-solid fa-plus"></i> Create Task
         </button>
       ` : ''}
@@ -1128,44 +1229,164 @@ async function renderAdminTasks(container) {
           <table class="table">
             <thead>
               <tr>
-                <th>Title</th>
+                <th style="width: 70px; text-align:center;">Priority</th>
+                <th>Title & Info</th>
                 <th>Type</th>
                 <th>Status</th>
                 <th>Assigned</th>
-                <th>Deadline</th>
+                <th>Schedule & Deadline</th>
                 <th>Completion Rate</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              ${tasks.map(t => `
-                <tr>
-                  <td><strong>${escapeHtml(t.title)}</strong></td>
-                  <td><span class="badge badge-not-started">${t.task_type}</span></td>
-                  <td><span class="badge badge-${t.status.toLowerCase()}">${t.status}</span></td>
-                  <td>${t.total_assigned || 0}</td>
-                  <td>${formatDateTime(t.deadline_at)}</td>
-                  <td><strong>${t.completion_rate || 0}%</strong></td>
-                  <td>
-                    <div style="display:flex; gap:6px;">
-                      ${t.status === 'DRAFT' && hasPermission('tasks.publish') ? `
-                        <button class="btn btn-success btn-sm" onclick="publishTaskDirectly('${t.id}')">
-                          <i class="fa-solid fa-upload"></i> Publish
+              ${tasks.length === 0 ? `
+                <tr><td colspan="8" class="empty-state">No tasks created yet. Click "Create Task" to begin.</td></tr>
+              ` : tasks.map((t, idx) => {
+                const isFirst = idx === 0;
+                const isLast = idx === tasks.length - 1;
+
+                let statusBadge = `<span class="badge badge-${t.status.toLowerCase()}">${t.status}</span>`;
+                if (t.status === 'SCHEDULED') {
+                  statusBadge = `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled</span>`;
+                } else if (t.status === 'PAUSED') {
+                  statusBadge = `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused</span>`;
+                } else if (t.status === 'ARCHIVED') {
+                  statusBadge = `<span class="badge badge-archived"><i class="fa-solid fa-box-archive"></i> Archived</span>`;
+                } else if (t.status === 'ACTIVE' || t.status === 'PUBLISHED') {
+                  statusBadge = `<span class="badge badge-active"><i class="fa-solid fa-circle-check"></i> Active</span>`;
+                }
+
+                return `
+                  <tr>
+                    <td style="text-align:center;">
+                      <div style="display:flex; flex-direction:column; gap:2px; align-items:center;">
+                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isFirst ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'UP')" title="Move Up (Higher in Teacher Portal)">
+                          <i class="fa-solid fa-arrow-up"></i>
                         </button>
-                      ` : ''}
-                      <button class="btn btn-secondary btn-sm" onclick="openTaskReport('${t.id}')">
-                        <i class="fa-solid fa-chart-pie"></i> Report
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              `).join('')}
+                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isLast ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'DOWN')" title="Move Down">
+                          <i class="fa-solid fa-arrow-down"></i>
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      <strong>${escapeHtml(t.title)}</strong>
+                      ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${escapeHtml(t.description)}</p>` : ''}
+                    </td>
+                    <td><span class="badge badge-not-started">${t.task_type}</span></td>
+                    <td>
+                      <div style="display:flex; flex-direction:column; gap:4px;">
+                        ${statusBadge}
+                        <select class="form-select form-select-sm" style="font-size:0.75rem; padding:2px 4px; width:100px;" onchange="changeTaskStatus('${t.id}', this.value)" title="Quick Status Switch">
+                          <option value="ACTIVE" ${t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED' ? 'selected' : ''}>Active</option>
+                          <option value="PAUSED" ${t.raw_status === 'PAUSED' ? 'selected' : ''}>Paused</option>
+                          <option value="ARCHIVED" ${t.raw_status === 'ARCHIVED' ? 'selected' : ''}>Archived</option>
+                          ${t.raw_status === 'DRAFT' ? '<option value="DRAFT" selected>Draft</option>' : ''}
+                        </select>
+                      </div>
+                    </td>
+                    <td><span class="badge badge-in-progress">${t.total_assigned || 0}</span></td>
+                    <td>
+                      <div><i class="fa-regular fa-clock text-danger"></i> Due: <strong>${formatDateTime(t.deadline_at)}</strong></div>
+                      ${t.open_at ? `<div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">Opens: ${formatDateTime(t.open_at)}</div>` : ''}
+                      ${!t.allow_late_submissions ? `<div style="font-size:0.75rem; color:var(--danger); font-weight:600;"><i class="fa-solid fa-lock"></i> Late Closed</div>` : `<div style="font-size:0.75rem; color:var(--success);"><i class="fa-solid fa-lock-open"></i> Late Allowed</div>`}
+                    </td>
+                    <td>
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <div style="width:50px; height:6px; background:var(--border-color); border-radius:3px; overflow:hidden;">
+                          <div style="height:100%; width:${t.completion_rate || 0}%; background:var(--primary);"></div>
+                        </div>
+                        <strong>${t.completion_rate || 0}%</strong>
+                      </div>
+                    </td>
+                    <td>
+                      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <button class="btn btn-primary btn-sm" onclick="openTaskEditor('${t.id}')" title="Edit Task Questions, Audience & Rules">
+                          <i class="fa-solid fa-pen-to-square"></i> Edit
+                        </button>
+                        <button class="btn btn-secondary btn-sm" onclick="openTaskReport('${t.id}')" title="View Response Dashboard">
+                          <i class="fa-solid fa-chart-pie"></i> Report
+                        </button>
+                        ${t.status === 'DRAFT' && hasPermission('tasks.publish') ? `
+                          <button class="btn btn-success btn-sm" onclick="publishTaskDirectly('${t.id}')">
+                            <i class="fa-solid fa-upload"></i> Publish
+                          </button>
+                        ` : ''}
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
             </tbody>
           </table>
         </div>
       </div>
     </div>
   `;
+}
+
+async function reorderTask(taskId, direction) {
+  try {
+    await api(`/tasks/${taskId}/reorder`, {
+      method: 'PUT',
+      body: { direction }
+    });
+    showToast(`Task moved ${direction.toLowerCase()}`, 'success');
+    loadCurrentView();
+  } catch {}
+}
+
+async function changeTaskStatus(taskId, status) {
+  try {
+    await api(`/tasks/${taskId}/status`, {
+      method: 'PUT',
+      body: { status }
+    });
+    showToast(`Task status changed to ${status}`, 'success');
+    loadCurrentView();
+  } catch {}
+}
+
+async function openTaskEditor(taskId) {
+  try {
+    const tasks = await api('/tasks');
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return showToast('Task not found', 'danger');
+
+    const campuses = typeof task.campus_ids === 'string' ? JSON.parse(task.campus_ids) : (task.campus_ids || []);
+    const questions = typeof task.questions === 'string' ? JSON.parse(task.questions) : (task.questions || []);
+    const audienceRules = typeof task.audience_rules === 'string' ? JSON.parse(task.audience_rules) : (task.audience_rules || {});
+    const exclusions = typeof task.recipient_exclusions === 'string' ? JSON.parse(task.recipient_exclusions) : (task.recipient_exclusions || []);
+
+    state.taskBuilder = {
+      editingTaskId: task.id,
+      step: 1,
+      title: task.title,
+      description: task.description || '',
+      task_type: task.task_type || 'ONE_TIME',
+      open_at: task.open_at ? new Date(task.open_at).toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16),
+      deadline_at: task.deadline_at ? new Date(task.deadline_at).toISOString().slice(0, 16) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+      allow_late_submissions: task.allow_late_submissions !== false,
+      status: task.status || 'ACTIVE',
+      sort_order: task.sort_order || 0,
+      questions: questions.length > 0 ? questions : [{ key: 'Q1', label: '', type: 'short_text', required: true }],
+      campus_ids: campuses,
+      audience_rules: {
+        departments: audienceRules.departments || [],
+        designations: audienceRules.designations || [],
+        subjects: audienceRules.subjects || [],
+        categories: audienceRules.categories || [],
+        groups: audienceRules.groups || [],
+        class_teacher_status: audienceRules.class_teacher_status !== undefined ? audienceRules.class_teacher_status : null
+      },
+      recipient_exclusions: exclusions,
+      previewRecipients: []
+    };
+
+    navigateTo('task-builder');
+  } catch (err) {
+    showToast('Failed to load task details', 'danger');
+  }
 }
 
 async function publishTaskDirectly(taskId) {
@@ -1190,7 +1411,9 @@ async function renderTaskBuilder(container) {
       title: '',
       description: '',
       task_type: 'ONE_TIME',
+      open_at: new Date().toISOString().slice(0, 16),
       deadline_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+      allow_late_submissions: true,
       questions: [
         { key: 'Q1', label: 'Sample question text', type: 'short_text', required: true }
       ],
@@ -1212,6 +1435,14 @@ async function renderTaskBuilder(container) {
   const campuses = await api('/campuses');
 
   container.innerHTML = `
+    <!-- Header title for Edit vs New -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h2><i class="fa-solid ${tb.editingTaskId ? 'fa-pen-to-square' : 'fa-wand-magic-sparkles'}"></i> ${tb.editingTaskId ? 'Edit Assigned Task' : 'Guided Task Builder'}</h2>
+      <button class="btn btn-secondary btn-sm" onclick="state.taskBuilder = null; navigateTo('tasks');">
+        <i class="fa-solid fa-arrow-left"></i> Back to Tasks
+      </button>
+    </div>
+
     <!-- Stepper Indicator -->
     <div class="stepper-header">
       ${[
@@ -1221,7 +1452,7 @@ async function renderTaskBuilder(container) {
         { num: 4, label: 'Audience Rules' },
         { num: 5, label: 'Recipient Preview' },
         { num: 6, label: 'Review' },
-        { num: 7, label: 'Publish' }
+        { num: 7, label: tb.editingTaskId ? 'Save Changes' : 'Publish' }
       ].map(s => `
         <div class="step-item ${tb.step === s.num ? 'active' : (tb.step > s.num ? 'completed' : '')}">
           <div class="step-circle">${tb.step > s.num ? '<i class="fa-solid fa-check"></i>' : s.num}</div>
@@ -1244,7 +1475,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
     case 1:
       return `
         <h3>Step 1: Basic Task Details</h3>
-        <p style="color:var(--text-muted); margin-bottom: 20px;">Provide the title, scope, and deadline for the task.</p>
+        <p style="color:var(--text-muted); margin-bottom: 20px;">Provide the title, start schedule, and deadline for the task.</p>
         <div class="form-group">
           <label>Task Title <span class="text-danger">*</span></label>
           <input type="text" id="tb-title" class="form-input" value="${escapeHtml(tb.title)}" placeholder="e.g. Term 1 Syllabus Verification" />
@@ -1260,10 +1491,38 @@ async function renderTaskBuilderStepContent(tb, campuses) {
             <option value="RECURRING_TEMPLATE" ${tb.task_type === 'RECURRING_TEMPLATE' ? 'selected' : ''}>Recurring Template</option>
           </select>
         </div>
-        <div class="form-group">
-          <label>Submission Deadline <span class="text-danger">*</span></label>
-          <input type="datetime-local" id="tb-deadline" class="form-input" value="${tb.deadline_at}" />
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="form-group">
+            <label>Start / Open Date & Time</label>
+            <input type="datetime-local" id="tb-open-at" class="form-input" value="${tb.open_at || new Date().toISOString().slice(0, 16)}" />
+            <span style="font-size:0.75rem; color:var(--text-muted);">Future date sets status as <strong>Scheduled</strong>.</span>
+          </div>
+          <div class="form-group">
+            <label>Submission Deadline <span class="text-danger">*</span></label>
+            <input type="datetime-local" id="tb-deadline" class="form-input" value="${tb.deadline_at}" />
+          </div>
         </div>
+
+        <div class="form-group">
+          <label class="checkbox-label" style="margin-top:4px;">
+            <input type="checkbox" id="tb-allow-late" ${tb.allow_late_submissions !== false ? 'checked' : ''} />
+            <strong>Allow Teachers to Submit Responses After Deadline</strong>
+          </label>
+        </div>
+
+        ${tb.editingTaskId ? `
+          <div class="form-group">
+            <label>Task Status</label>
+            <select id="tb-status" class="form-select">
+              <option value="ACTIVE" ${tb.status === 'ACTIVE' || tb.status === 'PUBLISHED' ? 'selected' : ''}>ACTIVE</option>
+              <option value="PAUSED" ${tb.status === 'PAUSED' ? 'selected' : ''}>PAUSED</option>
+              <option value="ARCHIVED" ${tb.status === 'ARCHIVED' ? 'selected' : ''}>ARCHIVED (Hidden from Teachers)</option>
+              <option value="DRAFT" ${tb.status === 'DRAFT' ? 'selected' : ''}>DRAFT</option>
+            </select>
+          </div>
+        ` : ''}
+
         <div style="display:flex; justify-content:flex-end; margin-top:24px;">
           <button class="btn btn-primary" onclick="saveTaskBuilderStep(1, 2)">Next: Form Builder <i class="fa-solid fa-arrow-right"></i></button>
         </div>
@@ -1484,33 +1743,41 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         <div style="background:var(--border-subtle); padding: 16px; border-radius:var(--radius-md); margin: 20px 0; display:flex; flex-direction:column; gap:10px;">
           <div><strong>Title:</strong> ${escapeHtml(tb.title)}</div>
           <div><strong>Type:</strong> ${tb.task_type}</div>
+          <div><strong>Start / Open Date:</strong> ${formatDateTime(tb.open_at)}</div>
           <div><strong>Deadline:</strong> ${formatDateTime(tb.deadline_at)}</div>
+          <div><strong>Late Submissions Allowed:</strong> ${tb.allow_late_submissions !== false ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</div>
           <div><strong>Questions:</strong> ${tb.questions.length} Fields Configured</div>
           <div><strong>Campuses:</strong> ${tb.campus_ids.length} Campuses Selected</div>
           <div><strong>Final Recipient Count:</strong> <strong class="text-primary">${activeCount} Teachers</strong></div>
         </div>
         <div style="display:flex; justify-content:space-between; margin-top:24px;">
           <button class="btn btn-secondary" onclick="state.taskBuilder.step = 5; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
-          <button class="btn btn-primary" onclick="state.taskBuilder.step = 7; loadCurrentView();">Proceed to Publish <i class="fa-solid fa-arrow-right"></i></button>
+          <button class="btn btn-primary" onclick="state.taskBuilder.step = 7; loadCurrentView();">Proceed to ${tb.editingTaskId ? 'Save Changes' : 'Publish'} <i class="fa-solid fa-arrow-right"></i></button>
         </div>
       `;
 
     case 7:
       return `
         <div style="text-align:center; padding: 24px 0;">
-          <div class="brand-badge" style="background:linear-gradient(135deg, var(--success), #059669);"><i class="fa-solid fa-rocket"></i></div>
-          <h3>Ready to Publish Task</h3>
+          <div class="brand-badge" style="background:linear-gradient(135deg, var(--success), #059669);"><i class="fa-solid ${tb.editingTaskId ? 'fa-floppy-disk' : 'fa-rocket'}"></i></div>
+          <h3>${tb.editingTaskId ? 'Save Task Modifications' : 'Ready to Publish Task'}</h3>
           <p style="color:var(--text-muted); max-width: 500px; margin: 12px auto 24px;">
-            Publishing will recalculate eligible recipients on the server, freeze immutable assignments, and dispatch assignment notification emails to teachers.
+            ${tb.editingTaskId ? 'Saving will update task questions, audience rules, late submission flags, and assign newly matching teachers.' : 'Publishing will recalculate eligible recipients on the server, freeze immutable assignments, and dispatch assignment notification emails to teachers.'}
           </p>
 
           <div style="display:flex; justify-content:center; gap: 16px;">
-            <button class="btn btn-outline" onclick="saveTaskDraft()">
-              <i class="fa-regular fa-floppy-disk"></i> Save as Draft Only
-            </button>
-            <button class="btn btn-success" onclick="commitPublishTask()">
-              <i class="fa-solid fa-upload"></i> Confirm & Publish Now
-            </button>
+            ${tb.editingTaskId ? `
+              <button class="btn btn-primary" onclick="commitUpdateTask()">
+                <i class="fa-solid fa-floppy-disk"></i> Save & Update Task
+              </button>
+            ` : `
+              <button class="btn btn-outline" onclick="saveTaskDraft()">
+                <i class="fa-regular fa-floppy-disk"></i> Save as Draft Only
+              </button>
+              <button class="btn btn-success" onclick="commitPublishTask()">
+                <i class="fa-solid fa-upload"></i> Confirm & Publish Now
+              </button>
+            `}
           </div>
         </div>
       `;
@@ -1525,7 +1792,12 @@ function saveTaskBuilderStep(curr, next) {
     tb.title = title;
     tb.description = document.getElementById('tb-desc').value.trim();
     tb.task_type = document.getElementById('tb-type').value;
+    tb.open_at = document.getElementById('tb-open-at') ? document.getElementById('tb-open-at').value : tb.open_at;
     tb.deadline_at = document.getElementById('tb-deadline').value;
+    tb.allow_late_submissions = document.getElementById('tb-allow-late') ? document.getElementById('tb-allow-late').checked : true;
+    if (document.getElementById('tb-status')) {
+      tb.status = document.getElementById('tb-status').value;
+    }
   }
   tb.step = next;
   loadCurrentView();
@@ -1619,7 +1891,9 @@ async function saveTaskDraft() {
         questions: tb.questions,
         audience_rules: tb.audience_rules,
         recipient_exclusions: tb.recipient_exclusions,
+        open_at: tb.open_at,
         deadline_at: tb.deadline_at,
+        allow_late_submissions: tb.allow_late_submissions,
         publish_now: false
       }
     });
@@ -1644,7 +1918,9 @@ async function commitPublishTask() {
         questions: tb.questions,
         audience_rules: tb.audience_rules,
         recipient_exclusions: tb.recipient_exclusions,
+        open_at: tb.open_at,
         deadline_at: tb.deadline_at,
+        allow_late_submissions: tb.allow_late_submissions,
         publish_now: true
       }
     });
@@ -1654,6 +1930,31 @@ async function commitPublishTask() {
   } catch {
     // Ignored
   }
+}
+
+async function commitUpdateTask() {
+  const tb = state.taskBuilder;
+  try {
+    const res = await api(`/tasks/${tb.editingTaskId}`, {
+      method: 'PUT',
+      body: {
+        title: tb.title,
+        description: tb.description,
+        task_type: tb.task_type,
+        campus_ids: tb.campus_ids,
+        questions: tb.questions,
+        audience_rules: tb.audience_rules,
+        recipient_exclusions: tb.recipient_exclusions,
+        open_at: tb.open_at,
+        deadline_at: tb.deadline_at,
+        allow_late_submissions: tb.allow_late_submissions,
+        status: tb.status
+      }
+    });
+    showToast(res.message || 'Task updated successfully!', 'success');
+    state.taskBuilder = null;
+    navigateTo('tasks');
+  } catch {}
 }
 
 // ============================================================================
@@ -3399,9 +3700,14 @@ async function renderImportExport(container) {
           <!-- Step 2: Upload & Parse -->
           <div style="background:var(--border-subtle); padding:20px; border-radius:var(--radius-md); border:1px solid var(--border-color);">
             <h3 style="margin-bottom:10px;"><i class="fa-solid fa-upload text-success"></i> 2. Upload & Validate File</h3>
-            <p style="font-size:0.88rem; color:var(--text-muted); margin-bottom:16px;">
+            <p style="font-size:0.88rem; color:var(--text-muted); margin-bottom:12px;">
               5-Step Lifecycle: Upload ➔ Parse ➔ Validate ➔ Preview Warnings/Errors ➔ Commit.
             </p>
+            <div class="form-group" style="margin-bottom:12px;">
+              <label style="font-size:0.85rem;"><strong>Default Initial Password for Imported Teachers</strong></label>
+              <input type="text" id="import-default-password" class="form-input" value="Welcome@2026" placeholder="Welcome@2026" />
+              <span style="font-size:0.75rem; color:var(--text-muted);">Used if a teacher row does not specify a custom password in the Excel file.</span>
+            </div>
             <input type="file" id="import-file" accept=".xlsx, .xls, .csv" class="form-input" style="margin-bottom:12px;" />
             <button class="btn btn-primary btn-block" onclick="handleImportPreview()">
               <i class="fa-solid fa-magnifying-glass"></i> Parse & Validate Data
@@ -3454,7 +3760,7 @@ async function handleImportPreview() {
           <div style="background:var(--success-bg); border-left:4px solid var(--success); padding:12px; margin-bottom:16px; font-size:0.88rem; color:var(--success-text);">
             <i class="fa-solid fa-circle-check"></i> File validated successfully with zero blocking errors. Ready to commit.
           </div>
-          <button class="btn btn-success" onclick="showToast('Import batch committed successfully!', 'success'); loadCurrentView();">
+          <button class="btn btn-success" onclick="handleImportCommit()">
             <i class="fa-solid fa-check-double"></i> Confirm & Transactional Commit
           </button>
         `}
@@ -3463,6 +3769,24 @@ async function handleImportPreview() {
   } catch {
     // Ignored
   }
+}
+
+async function handleImportCommit() {
+  const fileInput = document.getElementById('import-file');
+  if (!fileInput.files || fileInput.files.length === 0) {
+    return showToast('Please select an Excel or CSV file first', 'warning');
+  }
+  const defaultPassword = document.getElementById('import-default-password')?.value || 'Welcome@2026';
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('default_password', defaultPassword);
+
+  try {
+    const res = await api('/import/commit', { method: 'POST', body: formData });
+    showToast(`Import batch committed successfully! Created: ${res.created_count}, Updated: ${res.updated_count}`, 'success');
+    loadCurrentView();
+  } catch {}
 }
 
 // Audit Logs Timeline

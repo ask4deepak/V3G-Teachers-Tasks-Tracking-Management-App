@@ -449,8 +449,10 @@ async function seedMemoryStore() {
         specific_users: []
       },
       recipient_exclusions: [],
-      status: 'PUBLISHED',
-      open_at: new Date(),
+      status: 'ACTIVE',
+      sort_order: 1,
+      allow_late_submissions: true,
+      open_at: new Date(Date.now() - 3600000), // Opened 1 hour ago
       deadline_at: deadline,
       published_at: new Date(),
       published_by: adminNorthId,
@@ -547,6 +549,12 @@ async function initDb() {
         await pool.query(schemaSql);
         console.log('[Database] Schema migrations applied successfully.');
       }
+
+      // Run any incremental alter migrations
+      await pool.query(`
+        ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
+        ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE;
+      `);
 
       // Execute seed.sql
       const seedSqlPath = path.join(__dirname, 'db', 'seed.sql');

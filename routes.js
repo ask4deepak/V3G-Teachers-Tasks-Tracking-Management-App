@@ -196,6 +196,61 @@ router.put('/profile', auth.requireAuth, async (req, res) => {
   }
 });
 
+router.put('/profile/password', auth.requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { current_password, new_password, confirm_password } = req.body;
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+    if (new_password.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+    if (confirm_password && new_password !== confirm_password) {
+      return res.status(400).json({ error: 'New passwords do not match' });
+    }
+
+    let user;
+    if (db.isMemoryFallback()) {
+      user = db.getMemoryStore().users.find(u => u.id === userId);
+    } else {
+      const result = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+      user = result.rows[0];
+    }
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const valid = await bcrypt.compare(current_password, user.password_hash);
+    if (!valid) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    const newHash = await bcrypt.hash(new_password, 10);
+
+    if (db.isMemoryFallback()) {
+      user.password_hash = newHash;
+      user.updated_at = new Date();
+    } else {
+      await db.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [newHash, userId]);
+    }
+
+    await services.logAudit({
+      userId,
+      campusId: req.user.authorizedCampusIds ? req.user.authorizedCampusIds[0] : null,
+      action: 'PASSWORD_RESET',
+      entityType: 'USER',
+      entityId: userId,
+      description: `User ${user.display_name} (${user.email}) successfully reset their password.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================================
 // 3. CAMPUSES & MASTER DATA ROUTES
 // ============================================================================
@@ -1265,6 +1320,7 @@ router.post('/tasks/preview-recipients', auth.requirePermission('tasks.create'),
 router.get('/tasks', auth.requireAuth, async (req, res) => {
   try {
     const { status, campus_id, search } = req.query;
+    const now = new Date();
     let tasks = [];
 
     if (db.isMemoryFallback()) {
@@ -1276,9 +1332,16 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         const overdue = asgs.filter(a => a.status === 'OVERDUE').length;
         const inProgress = asgs.filter(a => a.status === 'IN_PROGRESS').length;
         const total = asgs.length;
+        const isOpenFuture = t.open_at && new Date(t.open_at) > now;
+        const displayStatus = (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && isOpenFuture ? 'SCHEDULED' : t.status;
 
         return {
           ...t,
+          status: displayStatus,
+          raw_status: t.status,
+          is_scheduled: isOpenFuture,
+          sort_order: t.sort_order || 0,
+          allow_late_submissions: t.allow_late_submissions !== false,
           total_assigned: total,
           submitted_on_time: subOnTime,
           submitted_late: subLate,
@@ -1288,8 +1351,9 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         };
       });
 
-      if (status) tasks = tasks.filter(t => t.status === status);
+      if (status) tasks = tasks.filter(t => t.status === status || t.raw_status === status);
       if (search) tasks = tasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase()));
+      tasks.sort((a, b) => (a.sort_order - b.sort_order) || (new Date(b.created_at) - new Date(a.created_at)));
     } else {
       let q = `
         SELECT t.*,
@@ -1310,13 +1374,20 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         p.push(`%${search}%`);
         q += ` AND t.title ILIKE $${p.length}`;
       }
-      q += ' ORDER BY t.created_at DESC';
+      q += ' ORDER BY t.sort_order ASC, t.created_at DESC';
       const result = await db.query(q, p);
       tasks = result.rows.map(t => {
         const total = parseInt(t.total_assigned, 10) || 0;
         const comp = (parseInt(t.submitted_on_time, 10) || 0) + (parseInt(t.submitted_late, 10) || 0);
+        const isOpenFuture = t.open_at && new Date(t.open_at) > now;
+        const displayStatus = (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && isOpenFuture ? 'SCHEDULED' : t.status;
         return {
           ...t,
+          status: displayStatus,
+          raw_status: t.status,
+          is_scheduled: isOpenFuture,
+          sort_order: t.sort_order || 0,
+          allow_late_submissions: t.allow_late_submissions !== false,
           completion_rate: total > 0 ? Math.round((comp / total) * 100) : 0
         };
       });
@@ -1338,7 +1409,10 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       questions = [],
       audience_rules = {},
       recipient_exclusions = [],
+      open_at,
       deadline_at,
+      allow_late_submissions = true,
+      sort_order = 0,
       publish_now = false,
       recurrence_config = null
     } = req.body;
@@ -1351,6 +1425,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
 
     const taskId = uuidv4();
     const now = new Date();
+    const openDate = open_at ? new Date(open_at) : now;
     const deadline = deadline_at ? new Date(deadline_at) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     let nextGen = null;
@@ -1371,8 +1446,10 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
         audience_rules,
         recipient_exclusions,
         status: 'DRAFT',
-        open_at: now,
+        open_at: openDate,
         deadline_at: deadline,
+        allow_late_submissions: Boolean(allow_late_submissions),
+        sort_order: Number(sort_order) || 0,
         published_at: null,
         published_by: null,
         created_by: req.user.id,
@@ -1384,9 +1461,9 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       });
     } else {
       await db.query(`
-        INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, status, open_at, deadline_at, created_by, recurrence_config, next_generation_at, recurrence_status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9, $10, $11, $12, $13, $14)
-      `, [taskId, task_type, title, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audienceRules), JSON.stringify(recipient_exclusions), now, deadline, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
+        INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, status, open_at, deadline_at, allow_late_submissions, sort_order, created_by, recurrence_config, next_generation_at, recurrence_status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9, $10, $11, $12, $13, $14, $15, $16)
+      `, [taskId, task_type, title, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), openDate, deadline, Boolean(allow_late_submissions), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
     }
 
     await services.logAudit({
@@ -1406,6 +1483,258 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
     }
 
     res.json({ success: true, id: taskId, published: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const {
+      title,
+      description,
+      campus_ids,
+      questions,
+      audience_rules,
+      recipient_exclusions,
+      open_at,
+      deadline_at,
+      allow_late_submissions,
+      status,
+      sort_order
+    } = req.body;
+
+    let task;
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      task = store.tasks.find(t => t.id === taskId);
+    } else {
+      const result = await db.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+      task = result.rows[0];
+    }
+
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    const currentCampuses = typeof task.campus_ids === 'string' ? JSON.parse(task.campus_ids) : task.campus_ids;
+    auth.assertCampusAccess(req.user, campus_ids || currentCampuses);
+
+    const now = new Date();
+    const updatedCampusIds = campus_ids !== undefined ? campus_ids : currentCampuses;
+    const updatedQuestions = questions !== undefined ? questions : (typeof task.questions === 'string' ? JSON.parse(task.questions) : task.questions);
+    const updatedAudienceRules = audience_rules !== undefined ? audience_rules : (typeof task.audience_rules === 'string' ? JSON.parse(task.audience_rules) : task.audience_rules);
+    const updatedExclusions = recipient_exclusions !== undefined ? recipient_exclusions : (typeof task.recipient_exclusions === 'string' ? JSON.parse(task.recipient_exclusions) : task.recipient_exclusions);
+    const updatedOpenAt = open_at ? new Date(open_at) : task.open_at;
+    const updatedDeadlineAt = deadline_at ? new Date(deadline_at) : task.deadline_at;
+    const updatedAllowLate = allow_late_submissions !== undefined ? Boolean(allow_late_submissions) : (task.allow_late_submissions !== false);
+    const updatedSortOrder = sort_order !== undefined ? Number(sort_order) : (task.sort_order || 0);
+    const updatedStatus = status || task.status;
+
+    if (db.isMemoryFallback()) {
+      task.title = title || task.title;
+      task.description = description !== undefined ? description : task.description;
+      task.campus_ids = updatedCampusIds;
+      task.questions = updatedQuestions;
+      task.audience_rules = updatedAudienceRules;
+      task.recipient_exclusions = updatedExclusions;
+      task.open_at = updatedOpenAt;
+      task.deadline_at = updatedDeadlineAt;
+      task.allow_late_submissions = updatedAllowLate;
+      task.sort_order = updatedSortOrder;
+      task.status = updatedStatus;
+      task.updated_at = now;
+    } else {
+      await db.query(`
+        UPDATE tasks
+        SET title = COALESCE($1, title),
+            description = COALESCE($2, description),
+            campus_ids = $3,
+            questions = $4,
+            audience_rules = $5,
+            recipient_exclusions = $6,
+            open_at = $7,
+            deadline_at = $8,
+            allow_late_submissions = $9,
+            sort_order = $10,
+            status = $11,
+            updated_at = NOW()
+        WHERE id = $12
+      `, [
+        title || null,
+        description !== undefined ? description : null,
+        JSON.stringify(updatedCampusIds),
+        JSON.stringify(updatedQuestions),
+        JSON.stringify(updatedAudienceRules),
+        JSON.stringify(updatedExclusions),
+        updatedOpenAt,
+        updatedDeadlineAt,
+        updatedAllowLate,
+        updatedSortOrder,
+        updatedStatus,
+        taskId
+      ]);
+    }
+
+    // If task was already published/active and audience rules were updated, add newly matching recipients
+    if (task.status !== 'DRAFT') {
+      try {
+        const resolvedTeachers = await services.resolveTaskAudience(updatedCampusIds, updatedAudienceRules, updatedExclusions);
+        const activeRecipients = resolvedTeachers.filter(t => !t.is_excluded);
+
+        for (const recipient of activeRecipients) {
+          const assignmentId = uuidv4();
+          if (db.isMemoryFallback()) {
+            const store = db.getMemoryStore();
+            if (!store.assignments.some(a => a.task_id === taskId && a.user_id === recipient.id)) {
+              store.assignments.push({
+                id: assignmentId,
+                task_id: taskId,
+                user_id: recipient.id,
+                campus_id: recipient.campus_id,
+                assigned_at: now,
+                assigned_by: req.user.id,
+                due_at: updatedDeadlineAt,
+                status: 'NOT_STARTED',
+                excluded_flag: false,
+                created_at: now,
+                updated_at: now
+              });
+            }
+          } else {
+            await db.query(`
+              INSERT INTO assignments (id, task_id, user_id, campus_id, assigned_at, assigned_by, due_at, status, excluded_flag)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, 'NOT_STARTED', FALSE)
+              ON CONFLICT (task_id, user_id) DO NOTHING
+            `, [assignmentId, taskId, recipient.id, recipient.campus_id, now, req.user.id, updatedDeadlineAt]);
+          }
+        }
+      } catch (e) {
+        console.warn(`[Task Update Audience Sync Warning]: ${e.message}`);
+      }
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: updatedCampusIds[0] || null,
+      action: 'TASK_UPDATED',
+      entityType: 'TASK',
+      entityId: taskId,
+      description: `Updated task "${title || task.title}" properties, status (${updatedStatus}), and questions/recipients.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Task updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/tasks/:id/status', auth.requirePermission('tasks.create'), async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const { status } = req.body;
+    if (!['ACTIVE', 'PAUSED', 'ARCHIVED', 'DRAFT'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Allowed values: ACTIVE, PAUSED, ARCHIVED, DRAFT' });
+    }
+
+    let task;
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      task = store.tasks.find(t => t.id === taskId);
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+      task.status = status;
+      task.updated_at = new Date();
+    } else {
+      const result = await db.query('UPDATE tasks SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *', [status, taskId]);
+      task = result.rows[0];
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: (typeof task.campus_ids === 'string' ? JSON.parse(task.campus_ids) : task.campus_ids)[0] || null,
+      action: 'TASK_STATUS_CHANGED',
+      entityType: 'TASK',
+      entityId: taskId,
+      description: `Changed status of task "${task.title}" to ${status}.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/tasks/:id/reorder', auth.requirePermission('tasks.create'), async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const { direction, sort_order } = req.body; // direction: 'UP' | 'DOWN'
+
+    let tasks = [];
+    if (db.isMemoryFallback()) {
+      tasks = [...db.getMemoryStore().tasks.filter(t => t.task_type !== 'RECURRING_TEMPLATE')];
+    } else {
+      const resTasks = await db.query('SELECT id, sort_order, created_at FROM tasks WHERE task_type != $1 ORDER BY sort_order ASC, created_at DESC', ['RECURRING_TEMPLATE']);
+      tasks = resTasks.rows;
+    }
+
+    const currentIndex = tasks.findIndex(t => t.id === taskId);
+    if (currentIndex === -1) return res.status(404).json({ error: 'Task not found' });
+
+    if (sort_order !== undefined) {
+      if (db.isMemoryFallback()) {
+        const t = db.getMemoryStore().tasks.find(x => x.id === taskId);
+        if (t) t.sort_order = Number(sort_order);
+      } else {
+        await db.query('UPDATE tasks SET sort_order = $1, updated_at = NOW() WHERE id = $2', [Number(sort_order), taskId]);
+      }
+      return res.json({ success: true, message: 'Sort order updated' });
+    }
+
+    if (direction === 'UP') {
+      if (currentIndex === 0) return res.json({ success: true, message: 'Already at the top' });
+      const prevTask = tasks[currentIndex - 1];
+      const currentSort = tasks[currentIndex].sort_order || 0;
+      const prevSort = prevTask.sort_order || 0;
+      const newCurrentSort = prevSort > 0 ? prevSort - 1 : 0;
+      const newPrevSort = currentSort >= prevSort ? currentSort + 1 : prevSort + 1;
+
+      if (db.isMemoryFallback()) {
+        const store = db.getMemoryStore();
+        const t1 = store.tasks.find(x => x.id === taskId);
+        const t2 = store.tasks.find(x => x.id === prevTask.id);
+        if (t1 && t2) {
+          const temp = t1.sort_order || 0;
+          t1.sort_order = (t2.sort_order || 0) - 1;
+        }
+      } else {
+        await db.transaction(async (client) => {
+          await client.query('UPDATE tasks SET sort_order = sort_order - 1 WHERE id = $1', [taskId]);
+          await client.query('UPDATE tasks SET sort_order = sort_order + 1 WHERE id = $1', [prevTask.id]);
+        });
+      }
+    } else if (direction === 'DOWN') {
+      if (currentIndex === tasks.length - 1) return res.json({ success: true, message: 'Already at the bottom' });
+      const nextTask = tasks[currentIndex + 1];
+
+      if (db.isMemoryFallback()) {
+        const store = db.getMemoryStore();
+        const t1 = store.tasks.find(x => x.id === taskId);
+        const t2 = store.tasks.find(x => x.id === nextTask.id);
+        if (t1 && t2) {
+          const temp = t1.sort_order || 0;
+          t1.sort_order = (t2.sort_order || 0) + 1;
+        }
+      } else {
+        await db.transaction(async (client) => {
+          await client.query('UPDATE tasks SET sort_order = sort_order + 1 WHERE id = $1', [taskId]);
+          await client.query('UPDATE tasks SET sort_order = sort_order - 1 WHERE id = $1', [nextTask.id]);
+        });
+      }
+    }
+
+    res.json({ success: true, message: 'Task reordered successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1436,15 +1765,23 @@ router.get('/teacher/tasks', auth.requireAuth, async (req, res) => {
       const asgs = store.assignments.filter(a => a.user_id === userId);
       tasks = asgs.map(a => {
         const t = store.tasks.find(tsk => tsk.id === a.task_id);
+        if (!t || t.status === 'ARCHIVED') return null; // Rule: Archived tasks not visible to teachers
+
         const sub = store.submissions.find(s => s.assignment_id === a.id);
         const isOverdue = !sub && new Date(a.due_at) < now;
         const computedStatus = sub ? (sub.draft_flag ? 'IN_PROGRESS' : (new Date(sub.submitted_at) <= new Date(a.due_at) ? 'SUBMITTED_ON_TIME' : 'SUBMITTED_LATE')) : (isOverdue ? 'OVERDUE' : 'NOT_STARTED');
+        const isScheduled = t.open_at && new Date(t.open_at) > now;
 
         return {
           assignment_id: a.id,
           task_id: a.task_id,
           title: t ? t.title : 'Task',
           description: t ? t.description : '',
+          task_status: t.status,
+          open_at: t.open_at,
+          is_scheduled: isScheduled,
+          allow_late_submissions: t.allow_late_submissions !== false,
+          sort_order: t.sort_order || 0,
           assigned_at: a.assigned_at,
           due_at: a.due_at,
           status: computedStatus,
@@ -1452,19 +1789,26 @@ router.get('/teacher/tasks', auth.requireAuth, async (req, res) => {
           draft_flag: sub ? sub.draft_flag : false,
           answers: sub ? sub.answers : {}
         };
-      });
+      }).filter(Boolean);
+
+      tasks.sort((a, b) => (a.sort_order - b.sort_order) || (new Date(a.due_at) - new Date(b.due_at)));
     } else {
       const q = `
-        SELECT a.id as assignment_id, a.task_id, t.title, t.description, a.assigned_at, a.due_at, a.status,
+        SELECT a.id as assignment_id, a.task_id, t.title, t.description, t.status as task_status,
+        t.open_at, t.allow_late_submissions, t.sort_order, a.assigned_at, a.due_at, a.status,
         s.submitted_at, s.draft_flag, s.answers
         FROM assignments a
         JOIN tasks t ON a.task_id = t.id
         LEFT JOIN submissions s ON a.id = s.assignment_id
-        WHERE a.user_id = $1
-        ORDER BY a.due_at ASC
+        WHERE a.user_id = $1 AND t.status != 'ARCHIVED'
+        ORDER BY t.sort_order ASC, a.due_at ASC
       `;
       const result = await db.query(q, [userId]);
-      tasks = result.rows;
+      tasks = result.rows.map(r => ({
+        ...r,
+        allow_late_submissions: r.allow_late_submissions !== false,
+        is_scheduled: r.open_at && new Date(r.open_at) > now
+      }));
     }
 
     res.json(tasks);
@@ -1477,6 +1821,7 @@ router.get('/teacher/tasks/:taskId', auth.requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
     const taskId = req.params.taskId;
+    const now = new Date();
 
     let task;
     let assignment;
@@ -1503,10 +1848,18 @@ router.get('/teacher/tasks/:taskId', auth.requireAuth, async (req, res) => {
     }
 
     if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (task.status === 'ARCHIVED') return res.status(404).json({ error: 'This task has been archived' });
     if (!assignment) return res.status(403).json({ error: 'You are not assigned to this task' });
 
+    const isScheduled = task.open_at && new Date(task.open_at) > now;
+
     res.json({
-      task,
+      task: {
+        ...task,
+        allow_late_submissions: task.allow_late_submissions !== false,
+        is_scheduled: isScheduled,
+        questions: typeof task.questions === 'string' ? JSON.parse(task.questions) : task.questions
+      },
       assignment,
       submission: submission || null
     });
@@ -1522,15 +1875,40 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
     const { answers = {}, is_draft = false } = req.body;
     const now = new Date();
 
+    let task;
     let assignment;
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
+      task = store.tasks.find(t => t.id === taskId);
       assignment = store.assignments.find(a => a.task_id === taskId && a.user_id === userId);
-      if (!assignment) return res.status(403).json({ error: 'You are not assigned to this task' });
+    } else {
+      const tRes = await db.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+      task = tRes.rows[0];
+      const aRes = await db.query('SELECT * FROM assignments WHERE task_id = $1 AND user_id = $2', [taskId, userId]);
+      assignment = aRes.rows[0];
+    }
 
-      const dueAt = new Date(assignment.due_at);
-      const computedStatus = is_draft ? 'IN_PROGRESS' : (now <= dueAt ? 'SUBMITTED_ON_TIME' : 'SUBMITTED_LATE');
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!assignment) return res.status(403).json({ error: 'You are not assigned to this task' });
 
+    // Validate lifecycle restrictions
+    if (task.status === 'ARCHIVED' || task.status === 'PAUSED') {
+      return res.status(400).json({ error: `This task is currently ${task.status.toLowerCase()} and is not accepting submissions.` });
+    }
+
+    if (task.open_at && new Date(task.open_at) > now) {
+      return res.status(400).json({ error: `This task is scheduled to open on ${new Date(task.open_at).toLocaleString()}. Submissions are not open yet.` });
+    }
+
+    const dueAt = new Date(assignment.due_at);
+    if (!is_draft && task.allow_late_submissions === false && now > dueAt) {
+      return res.status(400).json({ error: 'The deadline for this task has passed and late submissions are not allowed by the assignor.' });
+    }
+
+    const computedStatus = is_draft ? 'IN_PROGRESS' : (now <= dueAt ? 'SUBMITTED_ON_TIME' : 'SUBMITTED_LATE');
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
       let sub = store.submissions.find(s => s.assignment_id === assignment.id);
       if (sub) {
         sub.answers = answers;
@@ -1552,13 +1930,6 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
       assignment.status = computedStatus;
       assignment.updated_at = now;
     } else {
-      const aRes = await db.query('SELECT * FROM assignments WHERE task_id = $1 AND user_id = $2', [taskId, userId]);
-      assignment = aRes.rows[0];
-      if (!assignment) return res.status(403).json({ error: 'You are not assigned to this task' });
-
-      const dueAt = new Date(assignment.due_at);
-      const computedStatus = is_draft ? 'IN_PROGRESS' : (now <= dueAt ? 'SUBMITTED_ON_TIME' : 'SUBMITTED_LATE');
-
       await db.transaction(async (client) => {
         await client.query(`
           INSERT INTO submissions (id, assignment_id, answers, draft_flag, submitted_at, updated_at)
@@ -1573,7 +1944,7 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
 
     res.json({
       success: true,
-      status: is_draft ? 'IN_PROGRESS' : (now <= new Date(assignment.due_at) ? 'SUBMITTED_ON_TIME' : 'SUBMITTED_LATE'),
+      status: computedStatus,
       message: is_draft ? 'Draft saved successfully' : 'Task response submitted successfully'
     });
   } catch (err) {
@@ -1963,6 +2334,242 @@ router.post('/import/preview', auth.requirePermission('imports.execute'), upload
     });
 
     res.json(preview);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/import/commit', auth.requirePermission('imports.execute'), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Please upload an Excel or CSV file' });
+    const defaultPassword = req.body.default_password || 'Welcome@2026';
+
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = wb.SheetNames[0];
+    const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName]);
+
+    let createdCount = 0;
+    let updatedCount = 0;
+    const errors = [];
+
+    // Fetch master references
+    let campuses = [];
+    let masterValues = [];
+    let teacherRole = null;
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      campuses = store.campuses;
+      masterValues = store.master_values;
+      teacherRole = store.roles.find(r => r.name.toUpperCase().includes('TEACHER')) || store.roles[0];
+    } else {
+      const cRes = await db.query('SELECT * FROM campuses');
+      campuses = cRes.rows;
+      const mRes = await db.query('SELECT * FROM master_values');
+      masterValues = mRes.rows;
+      const rRes = await db.query("SELECT * FROM roles WHERE name ILIKE '%Teacher%' LIMIT 1");
+      teacherRole = rRes.rows[0];
+    }
+
+    for (let i = 0; i < rawRows.length; i++) {
+      const row = rawRows[i];
+      const email = (row['Email'] || row['Email (Key)'] || '').trim().toLowerCase();
+      if (!email) {
+        errors.push(`Row ${i + 1}: Skipped due to missing Email.`);
+        continue;
+      }
+
+      const firstName = (row['First Name'] || '').trim() || email.split('@')[0];
+      const lastName = (row['Last Name'] || '').trim();
+      const displayName = `${firstName} ${lastName}`.trim();
+      const employeeCode = (row['Employee Code'] || '').toString().trim() || null;
+      const phone = (row['Phone'] || '').toString().trim() || null;
+      const status = (row['Status (ACTIVE/INACTIVE)'] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      const classTeacherStr = (row['Class Teacher (Yes/No)'] || '').toString().trim().toLowerCase();
+      const classTeacher = classTeacherStr === 'yes' || classTeacherStr === 'true';
+      const rawPassword = (row['Password (Optional)'] || row['Password'] || defaultPassword).toString().trim();
+      const campusName = (row['Campus'] || '').toString().trim();
+
+      // Resolve Campus
+      let campus = campuses.find(c => c.name.toLowerCase() === campusName.toLowerCase());
+      if (!campus) {
+        campus = campuses[0];
+      }
+
+      const now = new Date();
+      const passwordHash = await bcrypt.hash(rawPassword || 'Welcome@2026', 10);
+
+      // Collect master attributes to assign
+      const deptName = (row['Department'] || '').toString().trim();
+      const desigName = (row['Designation'] || '').toString().trim();
+      const subjsStr = (row['Subjects (Comma separated)'] || '').toString().trim();
+      const catsStr = (row['Categories (Comma separated)'] || '').toString().trim();
+
+      const matchedMasterIds = [];
+      if (deptName) {
+        const mv = masterValues.find(m => m.master_type === 'DEPARTMENT' && m.name.toLowerCase() === deptName.toLowerCase());
+        if (mv) matchedMasterIds.push(mv.id);
+      }
+      if (desigName) {
+        const mv = masterValues.find(m => m.master_type === 'DESIGNATION' && m.name.toLowerCase() === desigName.toLowerCase());
+        if (mv) matchedMasterIds.push(mv.id);
+      }
+      if (subjsStr) {
+        subjsStr.split(',').map(s => s.trim()).forEach(sName => {
+          const mv = masterValues.find(m => m.master_type === 'SUBJECT' && m.name.toLowerCase() === sName.toLowerCase());
+          if (mv) matchedMasterIds.push(mv.id);
+        });
+      }
+      if (catsStr) {
+        catsStr.split(',').map(c => c.trim()).forEach(cName => {
+          const mv = masterValues.find(m => m.master_type === 'CATEGORY' && m.name.toLowerCase() === cName.toLowerCase());
+          if (mv) matchedMasterIds.push(mv.id);
+        });
+      }
+
+      if (db.isMemoryFallback()) {
+        const store = db.getMemoryStore();
+        let existingUser = store.users.find(u => u.email.toLowerCase() === email);
+        if (existingUser) {
+          existingUser.first_name = firstName;
+          existingUser.last_name = lastName;
+          existingUser.display_name = displayName;
+          if (employeeCode) existingUser.employee_code = employeeCode;
+          if (phone) existingUser.phone = phone;
+          existingUser.status = status;
+          existingUser.class_teacher_status = classTeacher;
+          if (row['Password (Optional)'] || row['Password']) {
+            existingUser.password_hash = passwordHash;
+          }
+          existingUser.updated_at = now;
+
+          // Replace attributes
+          if (campus) {
+            store.user_attributes = store.user_attributes.filter(a => a.user_id !== existingUser.id);
+            for (const mid of matchedMasterIds) {
+              store.user_attributes.push({
+                id: uuidv4(),
+                user_id: existingUser.id,
+                campus_id: campus.id,
+                master_value_id: mid,
+                created_at: now,
+                created_by: req.user.id
+              });
+            }
+          }
+          updatedCount++;
+        } else {
+          const newUserId = uuidv4();
+          const newUser = {
+            id: newUserId,
+            user_type: 'TEACHER',
+            email,
+            password_hash: passwordHash,
+            first_name: firstName,
+            last_name: lastName,
+            display_name: displayName,
+            employee_code: employeeCode,
+            phone,
+            status,
+            class_teacher_status: classTeacher,
+            created_at: now,
+            updated_at: now
+          };
+          store.users.push(newUser);
+
+          if (campus && teacherRole) {
+            store.user_access.push({
+              id: uuidv4(),
+              user_id: newUserId,
+              role_id: teacherRole.id,
+              campus_id: campus.id,
+              permission_overrides: null,
+              created_at: now,
+              updated_at: now
+            });
+          }
+
+          if (campus) {
+            for (const mid of matchedMasterIds) {
+              store.user_attributes.push({
+                id: uuidv4(),
+                user_id: newUserId,
+                campus_id: campus.id,
+                master_value_id: mid,
+                created_at: now,
+                created_by: req.user.id
+              });
+            }
+          }
+          createdCount++;
+        }
+      } else {
+        await db.transaction(async (client) => {
+          const uRes = await client.query('SELECT * FROM users WHERE email = $1', [email]);
+          let userId;
+          if (uRes.rows.length > 0) {
+            userId = uRes.rows[0].id;
+            if (row['Password (Optional)'] || row['Password']) {
+              await client.query(`
+                UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = COALESCE($4, employee_code), phone = COALESCE($5, phone), status = $6, class_teacher_status = $7, password_hash = $8, updated_at = NOW()
+                WHERE id = $9
+              `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, passwordHash, userId]);
+            } else {
+              await client.query(`
+                UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = COALESCE($4, employee_code), phone = COALESCE($5, phone), status = $6, class_teacher_status = $7, updated_at = NOW()
+                WHERE id = $8
+              `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, userId]);
+            }
+            updatedCount++;
+          } else {
+            userId = uuidv4();
+            await client.query(`
+              INSERT INTO users (id, user_type, email, password_hash, first_name, last_name, display_name, employee_code, phone, status, class_teacher_status, created_at, updated_at)
+              VALUES ($1, 'TEACHER', $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+            `, [userId, email, passwordHash, firstName, lastName, displayName, employeeCode, phone, status, classTeacher]);
+
+            if (campus && teacherRole) {
+              await client.query(`
+                INSERT INTO user_access (id, user_id, role_id, campus_id, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, NOW(), NOW())
+                ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
+              `, [uuidv4(), userId, teacherRole.id, campus.id]);
+            }
+            createdCount++;
+          }
+
+          if (campus) {
+            await client.query('DELETE FROM user_attributes WHERE user_id = $1', [userId]);
+            for (const mid of matchedMasterIds) {
+              await client.query(`
+                INSERT INTO user_attributes (id, user_id, campus_id, master_value_id, created_by)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (user_id, campus_id, master_value_id) DO NOTHING
+              `, [uuidv4(), userId, campus.id, mid, req.user.id]);
+            }
+          }
+        });
+      }
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: campuses[0] ? campuses[0].id : null,
+      action: 'IMPORT_COMMITTED',
+      entityType: 'IMPORT',
+      entityId: null,
+      description: `Committed bulk teacher import. Created: ${createdCount}, Updated: ${updatedCount}.`,
+      metadata: { createdCount, updatedCount, total: rawRows.length },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      created_count: createdCount,
+      updated_count: updatedCount,
+      total_processed: rawRows.length,
+      errors
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
