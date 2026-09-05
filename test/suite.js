@@ -80,7 +80,7 @@ async function runAllTests() {
 
   await test('Audience resolution obeys AND logic across Subject and Class Teacher status', async () => {
     const northCampusId = '11111111-1111-1111-1111-111111111111';
-    const subEng = 's1111111-1111-1111-1111-111111111111';
+    const subEng = 'f1111111-1111-1111-1111-111111111111';
 
     // English subject + Class Teacher = True -> Should match Sarah Johnson only
     const recipients = await services.resolveTaskAudience([northCampusId], {
@@ -94,7 +94,7 @@ async function runAllTests() {
 
   await test('Audience resolution respects explicit recipient exclusions', async () => {
     const northCampusId = '11111111-1111-1111-1111-111111111111';
-    const teacherSarahId = 'u4444444-4444-4444-4444-444444444444';
+    const teacherSarahId = 'a4444444-4444-4444-4444-444444444444';
 
     const recipients = await services.resolveTaskAudience([northCampusId], {}, [teacherSarahId]);
     const sarah = recipients.find(r => r.id === teacherSarahId);
@@ -107,7 +107,7 @@ async function runAllTests() {
   await test('Task publication recalculates recipients and creates assignments snapshot', async () => {
     const northCampusId = '11111111-1111-1111-1111-111111111111';
     const taskId = 'tsk-test-publication-01';
-    const adminId = 'u2222222-2222-2222-2222-222222222222';
+    const adminId = 'a2222222-2222-2222-2222-222222222222';
 
     // Create draft task
     if (db.isMemoryFallback()) {
@@ -240,8 +240,8 @@ async function runAllTests() {
     assert.strictEqual(group.name, 'Updated Examination Committee');
 
     // Add teacher Sarah and Michael to group with roles
-    const teacherSarahId = 'u4444444-4444-4444-4444-444444444444';
-    const teacherMichaelId = 'u5555555-5555-5555-5555-555555555555';
+    const teacherSarahId = 'a4444444-4444-4444-4444-444444444444';
+    const teacherMichaelId = 'a5555555-5555-5555-5555-555555555555';
 
     store.group_memberships = store.group_memberships.filter(m => m.group_id !== group.id);
     store.group_memberships.push({
@@ -304,7 +304,7 @@ async function runAllTests() {
       sort_order: 2,
       open_at: new Date(),
       deadline_at: new Date(Date.now() + 86400000),
-      created_by: 'u2222222-2222-2222-2222-222222222222',
+      created_by: 'a2222222-2222-2222-2222-222222222222',
       created_at: new Date(),
       updated_at: new Date()
     };
@@ -335,7 +335,7 @@ async function runAllTests() {
       status: 'ARCHIVED',
       open_at: new Date(),
       deadline_at: new Date(Date.now() + 86400000),
-      created_by: 'u2222222-2222-2222-2222-222222222222',
+      created_by: 'a2222222-2222-2222-2222-222222222222',
       created_at: new Date(),
       updated_at: new Date()
     });
@@ -344,10 +344,10 @@ async function runAllTests() {
     store.assignments.push({
       id: 'asg-archived-01',
       task_id: archivedTaskId,
-      user_id: 'u4444444-4444-4444-4444-444444444444',
+      user_id: 'a4444444-4444-4444-4444-444444444444',
       campus_id: '11111111-1111-1111-1111-111111111111',
       assigned_at: new Date(),
-      assigned_by: 'u2222222-2222-2222-2222-222222222222',
+      assigned_by: 'a2222222-2222-2222-2222-222222222222',
       due_at: new Date(Date.now() + 86400000),
       status: 'NOT_STARTED',
       excluded_flag: false,
@@ -357,7 +357,7 @@ async function runAllTests() {
 
     // Verify teacher query logic filters out ARCHIVED tasks
     const teacherVisibleTasks = store.assignments
-      .filter(a => a.user_id === 'u4444444-4444-4444-4444-444444444444')
+      .filter(a => a.user_id === 'a4444444-4444-4444-4444-444444444444')
       .map(a => {
         const t = store.tasks.find(tsk => tsk.id === a.task_id);
         if (!t || t.status === 'ARCHIVED') return null;
@@ -384,11 +384,11 @@ async function runAllTests() {
     user.updated_at = new Date();
 
     // Verify old password fails and new password succeeds
-    const oldFails = await bcrypt.compare('Teacher@123', user.password_hash);
-    assert.strictEqual(oldFails, false);
+    const oldfails = await bcrypt.compare('Teacher@123', user.password_hash);
+    assert.strictEqual(oldfails, false);
 
-    const newSucceeds = await bcrypt.compare(newPassword, user.password_hash);
-    assert.strictEqual(newSucceeds, true);
+    const newsucceeds = await bcrypt.compare(newPassword, user.password_hash);
+    assert.strictEqual(newsucceeds, true);
 
     // Revert for clean state
     user.password_hash = await bcrypt.hash('Teacher@123', 10);
@@ -412,7 +412,7 @@ async function runAllTests() {
     const store = db.getMemoryStore();
     const taskId = 'tsk-edit-sub-01';
     const asgId = 'asg-edit-sub-01';
-    const teacherId = 'u4444444-4444-4444-4444-444444444444';
+    const teacherId = 'a4444444-4444-4444-4444-444444444444';
 
     // Create task with allow_edit_submission = true
     store.tasks.push({
@@ -428,7 +428,7 @@ async function runAllTests() {
       status: 'ACTIVE',
       open_at: new Date(),
       deadline_at: new Date(Date.now() + 86400000),
-      created_by: 'u2222222-2222-2222-2222-222222222222',
+      created_by: 'a2222222-2222-2222-2222-222222222222',
       created_at: new Date(),
       updated_at: new Date()
     });

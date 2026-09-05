@@ -137,17 +137,17 @@ async function seedMemoryStore() {
   const depSci = 'd3333333-3333-3333-3333-333333333333';
   const depSoc = 'd4444444-4444-4444-4444-444444444444';
 
-  const desSr = 'g1111111-1111-1111-1111-111111111111';
-  const desPGT = 'g2222222-2222-2222-2222-222222222222';
-  const desTGT = 'g3333333-3333-3333-3333-333333333333';
-  const desPRT = 'g4444444-4444-4444-4444-444444444444';
+  const desSr = 'e1111111-1111-1111-1111-111111111111';
+  const desPGT = 'e2222222-2222-2222-2222-222222222222';
+  const desTGT = 'e3333333-3333-3333-3333-333333333333';
+  const desPRT = 'e4444444-4444-4444-4444-444444444444';
 
-  const subEng = 's1111111-1111-1111-1111-111111111111';
-  const subMath = 's2222222-2222-2222-2222-222222222222';
-  const subPhy = 's3333333-3333-3333-3333-333333333333';
-  const subChem = 's4444444-4444-4444-4444-444444444444';
-  const subBio = 's5555555-5555-5555-5555-555555555555';
-  const subHist = 's7777777-7777-7777-7777-777777777777';
+  const subEng = 'f1111111-1111-1111-1111-111111111111';
+  const subMath = 'f2222222-2222-2222-2222-222222222222';
+  const subPhy = 'f3333333-3333-3333-3333-333333333333';
+  const subChem = 'f4444444-4444-4444-4444-444444444444';
+  const subBio = 'f5555555-5555-5555-5555-555555555555';
+  const subHist = 'f7777777-7777-7777-7777-777777777777';
 
   const catPri = 'c1111111-1111-1111-1111-111111111111';
   const catMid = 'c2222222-2222-2222-2222-222222222222';
@@ -179,14 +179,14 @@ async function seedMemoryStore() {
   ];
 
   // Users
-  const superAdminId = 'u1111111-1111-1111-1111-111111111111';
-  const adminNorthId = 'u2222222-2222-2222-2222-222222222222';
-  const adminSouthId = 'u3333333-3333-3333-3333-333333333333';
-  const teacherSarahId = 'u4444444-4444-4444-4444-444444444444';
-  const teacherMichaelId = 'u5555555-5555-5555-5555-555555555555';
-  const teacherPriyaId = 'u6666666-6666-6666-6666-666666666666';
-  const teacherDavidId = 'u7777777-7777-7777-7777-777777777777';
-  const teacherEmilyId = 'u8888888-8888-8888-8888-888888888888';
+  const superAdminId = 'a1111111-1111-1111-1111-111111111111';
+  const adminNorthId = 'a2222222-2222-2222-2222-222222222222';
+  const adminSouthId = 'a3333333-3333-3333-3333-333333333333';
+  const teacherSarahId = 'a4444444-4444-4444-4444-444444444444';
+  const teacherMichaelId = 'a5555555-5555-5555-5555-555555555555';
+  const teacherPriyaId = 'a6666666-6666-6666-6666-666666666666';
+  const teacherDavidId = 'a7777777-7777-7777-7777-777777777777';
+  const teacherEmilyId = 'a8888888-8888-8888-8888-888888888888';
 
   memoryStore.users = [
     {
@@ -573,12 +573,27 @@ async function initDb() {
       await pool.query(`
         INSERT INTO users (id, email, password_hash, user_type, employee_code, first_name, last_name, display_name, status)
         VALUES 
-        ('u1111111-1111-1111-1111-111111111111', 'superadmin@institution.edu', $1, 'SUPER_ADMIN', 'EMP_SA01', 'Arthur', 'Pendleton', 'Arthur Pendleton', 'ACTIVE'),
-        ('u2222222-2222-2222-2222-222222222222', 'admin.north@institution.edu', $1, 'ADMIN', 'EMP_AD01', 'Eleanor', 'Vance', 'Eleanor Vance', 'ACTIVE'),
-        ('u3333333-3333-3333-3333-333333333333', 'admin.south@institution.edu', $1, 'ADMIN', 'EMP_AD02', 'Marcus', 'Sterling', 'Marcus Sterling', 'ACTIVE'),
-        ('u4444444-4444-4444-4444-444444444444', 'teacher.sarah@institution.edu', $2, 'TEACHER', 'EMP_TC01', 'Sarah', 'Johnson', 'Sarah Johnson', 'ACTIVE'),
-        ('u5555555-5555-5555-5555-555555555555', 'teacher.michael@institution.edu', $2, 'TEACHER', 'EMP_TC02', 'Michael', 'Chen', 'Michael Chen', 'ACTIVE')
+        ('a1111111-1111-1111-1111-111111111111', 'superadmin@institution.edu', $1, 'SUPER_ADMIN', 'EMP_SA01', 'Arthur', 'Pendleton', 'Arthur Pendleton', 'ACTIVE'),
+        ('a2222222-2222-2222-2222-222222222222', 'admin.north@institution.edu', $1, 'ADMIN', 'EMP_AD01', 'Eleanor', 'Vance', 'Eleanor Vance', 'ACTIVE'),
+        ('a3333333-3333-3333-3333-333333333333', 'admin.south@institution.edu', $1, 'ADMIN', 'EMP_AD02', 'Marcus', 'Sterling', 'Marcus Sterling', 'ACTIVE'),
+        ('a4444444-4444-4444-4444-444444444444', 'teacher.sarah@institution.edu', $2, 'TEACHER', 'EMP_TC01', 'Sarah', 'Johnson', 'Sarah Johnson', 'ACTIVE'),
+        ('a5555555-5555-5555-5555-555555555555', 'teacher.michael@institution.edu', $2, 'TEACHER', 'EMP_TC02', 'Michael', 'Chen', 'Michael Chen', 'ACTIVE')
         ON CONFLICT (email) DO NOTHING;
+
+        INSERT INTO user_access (id, user_id, role_id, campus_id) VALUES
+        ('91111111-1111-1111-1111-111111111111', 'a1111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', NULL),
+        ('92222222-2222-2222-2222-222222222222', 'a2222222-2222-2222-2222-222222222222', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '11111111-1111-1111-1111-111111111111'),
+        ('93333333-3333-3333-3333-333333333333', 'a3333333-3333-3333-3333-333333333333', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222')
+        ON CONFLICT (id) DO NOTHING;
+
+        INSERT INTO user_attributes (id, user_id, campus_id, master_value_id) VALUES
+        ('81111111-1111-1111-1111-111111111111', 'a4444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'd1111111-1111-1111-1111-111111111111'),
+        ('82222222-2222-2222-2222-222222222222', 'a4444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'e2222222-2222-2222-2222-222222222222'),
+        ('83333333-3333-3333-3333-333333333333', 'a4444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'f1111111-1111-1111-1111-111111111111'),
+        ('84444444-4444-4444-4444-444444444444', 'a5555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', 'd2222222-2222-2222-2222-222222222222'),
+        ('85555555-5555-5555-5555-555555555555', 'a5555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', 'e1111111-1111-1111-1111-111111111111'),
+        ('86666666-6666-6666-6666-666666666666', 'a5555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', 'f2222222-2222-2222-2222-222222222222')
+        ON CONFLICT (id) DO NOTHING;
       `, [hash, teacherHash]);
 
       return;
