@@ -230,6 +230,9 @@ function buildSidebarNav() {
     if (hasPermission('masters.view')) {
       addNavItem(nav, 'masters', 'fa-layer-group', 'Master Data');
     }
+    if (state.user.user_type === 'SUPER_ADMIN' || state.user.isSuperAdmin || hasPermission('campuses.manage')) {
+      addNavItem(nav, 'campuses', 'fa-building-columns', 'Campuses');
+    }
     if (hasPermission('imports.execute') || hasPermission('exports.execute')) {
       addNavItem(nav, 'import-export', 'fa-file-excel', 'Import & Export');
     }
@@ -367,6 +370,10 @@ async function renderCurrentView() {
     case 'masters':
       elements.pageTitle.textContent = 'Master Data Management';
       await renderMasterData(container);
+      break;
+    case 'campuses':
+      elements.pageTitle.textContent = 'Campus Management';
+      await renderCampusesView(container);
       break;
     case 'import-export':
       elements.pageTitle.textContent = 'Import & Export Centre';
@@ -883,46 +890,106 @@ async function submitTaskResponse(taskId, isDraft = false) {
 async function renderTeacherGroups(container) {
   const groups = await api('/groups');
 
+  const myGroups = groups.filter(g => g.user_membership_status === 'APPROVED' || g.user_membership_status === 'PENDING');
+  const availableGroups = groups.filter(g => !g.user_membership_status);
+
   container.innerHTML = `
-    <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-users-rectangle"></i> Campus Faculty Groups & Communities</h2>
+    <div style="margin-bottom: 24px;">
+      <h2><i class="fa-solid fa-users-rectangle text-primary"></i> Campus Faculty Groups & Communities</h2>
+      <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 4px;">
+        Browse and join faculty collaboration groups across your assigned campus. Group members receive targeted task broadcasts and announcements.
+      </p>
+    </div>
+
+    <!-- Section 1: My Enrolled / Pending Groups -->
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="font-size: 1.1rem; margin: 0;"><i class="fa-solid fa-circle-check text-success"></i> My Enrolled Groups (${myGroups.length})</h3>
       </div>
       <div class="card-body">
-        <div class="table-responsive">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Group Name</th>
-                <th>Campus</th>
-                <th>Description</th>
-                <th>Members</th>
-                <th>Your Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${groups.map(g => `
+        ${myGroups.length === 0 ? `
+          <div class="empty-state" style="padding: 24px;">
+            <i class="fa-solid fa-users-slash" style="font-size: 2rem; color: var(--text-muted); margin-bottom: 8px;"></i>
+            <p>You have not joined any campus faculty groups yet. Browse available campus groups below to join.</p>
+          </div>
+        ` : `
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
                 <tr>
-                  <td><strong>${escapeHtml(g.name)}</strong></td>
-                  <td>${escapeHtml(g.campus_name)}</td>
-                  <td>${escapeHtml(g.description || 'N/A')}</td>
-                  <td><span class="badge badge-in-progress">${g.member_count} Members</span></td>
-                  <td>
-                    ${g.user_membership_status === 'APPROVED' ? `<span class="badge badge-active"><i class="fa-solid fa-check"></i> Member</span>` : (g.user_membership_status === 'PENDING' ? `<span class="badge badge-pending"><i class="fa-solid fa-clock"></i> Pending Approval</span>` : `<span class="badge badge-not-started">Not Joined</span>`)}
-                  </td>
-                  <td>
-                    ${!g.user_membership_status ? `
-                      <button class="btn btn-primary btn-sm" onclick="requestGroupJoin('${g.id}', '${escapeHtml(g.name)}')">
-                        <i class="fa-solid fa-user-plus"></i> Request to Join
-                      </button>
-                    ` : (g.user_membership_status === 'PENDING' ? `<span style="font-size:0.8rem; color:var(--text-muted);">Request in Review</span>` : `<span style="font-size:0.8rem; color:var(--success); font-weight:600;">Enrolled</span>`)}
-                  </td>
+                  <th>Group Name</th>
+                  <th>Campus</th>
+                  <th>Description</th>
+                  <th>Total Members</th>
+                  <th>Membership Status</th>
                 </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                ${myGroups.map(g => `
+                  <tr>
+                    <td><strong>${escapeHtml(g.name)}</strong></td>
+                    <td><span class="badge badge-in-progress">${escapeHtml(g.campus_name || 'All Campuses')}</span></td>
+                    <td>${escapeHtml(g.description || '—')}</td>
+                    <td>${g.member_count || 0} Members</td>
+                    <td>
+                      ${g.user_membership_status === 'APPROVED' 
+                        ? `<span class="badge badge-active"><i class="fa-solid fa-check"></i> Enrolled Member</span>` 
+                        : `<span class="badge badge-pending"><i class="fa-solid fa-clock"></i> Request Pending Approval</span>`}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+    </div>
+
+    <!-- Section 2: Discoverable Campus Groups -->
+    <div class="card">
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="font-size: 1.1rem; margin: 0;"><i class="fa-solid fa-compass text-primary"></i> Available Campus Groups (${availableGroups.length})</h3>
+      </div>
+      <div class="card-body">
+        ${availableGroups.length === 0 ? `
+          <div class="empty-state" style="padding: 24px;">
+            <i class="fa-solid fa-circle-info" style="font-size: 2rem; color: var(--text-muted); margin-bottom: 8px;"></i>
+            <p>No additional campus groups available to join at this time.</p>
+          </div>
+        ` : `
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Group Name</th>
+                  <th>Campus</th>
+                  <th>Description</th>
+                  <th>Members</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${availableGroups.map(g => `
+                  <tr>
+                    <td><strong>${escapeHtml(g.name)}</strong></td>
+                    <td><span class="badge badge-in-progress">${escapeHtml(g.campus_name || 'All Campuses')}</span></td>
+                    <td>${escapeHtml(g.description || '—')}</td>
+                    <td>${g.member_count || 0} Members</td>
+                    <td>
+                      ${g.allow_join_requests !== false ? `
+                        <button class="btn btn-primary btn-sm" onclick="requestGroupJoin('${g.id}', '${escapeHtml(g.name)}')">
+                          <i class="fa-solid fa-user-plus"></i> Request to Join
+                        </button>
+                      ` : `
+                        <span style="font-size:0.8rem; color:var(--text-muted);"><i class="fa-solid fa-lock"></i> Invitation Only</span>
+                      `}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
       </div>
     </div>
   `;
@@ -3733,13 +3800,18 @@ async function renderMasterData(container) {
   const canEdit = hasPermission('masters.edit') || state.user.isSuperAdmin;
 
   container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
       <h2><i class="fa-solid fa-layer-group"></i> Master Data Management</h2>
-      ${hasPermission('masters.create') ? `
-        <button class="btn btn-primary" onclick="openCreateMasterModal('${currentTab}')">
-          <i class="fa-solid fa-plus"></i> Add ${currentTab}
-        </button>
-      ` : ''}
+      <div style="display:flex; gap:10px;">
+        ${hasPermission('masters.create') ? `
+          <button class="btn btn-secondary" onclick="openBulkMasterModal('${currentTab}')">
+            <i class="fa-solid fa-bolt text-warning"></i> Bulk Add ${currentTab}s
+          </button>
+          <button class="btn btn-primary" onclick="openCreateMasterModal('${currentTab}')">
+            <i class="fa-solid fa-plus"></i> Add Single ${currentTab}
+          </button>
+        ` : ''}
+      </div>
     </div>
 
     <!-- Tab Bar -->
@@ -3766,7 +3838,9 @@ async function renderMasterData(container) {
               </tr>
             </thead>
             <tbody>
-              ${masters.map(m => `
+              ${masters.length === 0 ? `
+                <tr><td colspan="6" class="empty-state">No ${currentTab.toLowerCase()} entries found. Use "Add Single" or "Bulk Add" above.</td></tr>
+              ` : masters.map(m => `
                 <tr>
                   <td><strong>${escapeHtml(m.name)}</strong></td>
                   <td><code>${escapeHtml(m.code || 'N/A')}</code></td>
@@ -3790,12 +3864,70 @@ async function renderMasterData(container) {
   `;
 }
 
+async function openBulkMasterModal(masterType) {
+  const campuses = await api('/campuses');
+
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3><i class="fa-solid fa-bolt text-warning"></i> Bulk Add ${masterType}s</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Paste or type multiple entries at once</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-bulk-master" onsubmit="handleBulkMasters(event, '${masterType}')">
+        <div class="form-group">
+          <label>Campus Scope</label>
+          <select name="campus_id" class="form-select">
+            <option value="">Global (All Campuses)</option>
+            ${campuses.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Entries (One per line, format: <code>Name</code> or <code>Name, Code</code>) <span class="text-danger">*</span></label>
+          <textarea name="text" class="form-textarea" rows="8" required placeholder="English&#10;Mathematics, DEP_MATH&#10;Physics, SUB_PHY&#10;Chemistry, SUB_CHEM&#10;Senior Secondary Wing, CAT_SNR"></textarea>
+          <span style="font-size:0.75rem; color:var(--text-muted);">Codes and sequential sort orders will be automatically generated if omitted.</span>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-plus-circle"></i> Bulk Insert Items
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleBulkMasters(event, masterType) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const text = formData.get('text');
+  const campus_id = formData.get('campus_id') || null;
+
+  try {
+    const res = await api('/masters/bulk', {
+      method: 'POST',
+      body: { master_type: masterType, campus_id, text }
+    });
+    showToast(`Successfully bulk added ${res.count} ${masterType.toLowerCase()}s!`, 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
 async function openCreateMasterModal(masterType) {
   const campuses = await api('/campuses');
 
   const html = `
     <div class="card-header">
-      <h3>Add ${masterType} Master</h3>
+      <h3>Add Single ${masterType} Master</h3>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <div class="card-body">
@@ -3912,6 +4044,260 @@ async function handleSaveMaster(event, masterId) {
   try {
     const res = await api(`/masters/${masterId}`, { method: 'PUT', body: payload });
     showToast(res.message || 'Master updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
+// ============================================================================
+// CAMPUSES MANAGEMENT VIEW & MODALS
+// ============================================================================
+
+async function renderCampusesView(container) {
+  const campuses = await api('/campuses?include_inactive=true');
+  const isSuperAdmin = state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN';
+
+  container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
+      <div>
+        <h2><i class="fa-solid fa-building-columns"></i> Campus Management</h2>
+        <p style="color:var(--text-muted); font-size:0.88rem; margin:4px 0 0 0;">Create, organize, and manage physical institutional campuses and learning wings.</p>
+      </div>
+      ${isSuperAdmin ? `
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary" onclick="openBulkCampusesModal()">
+            <i class="fa-solid fa-bolt text-warning"></i> Bulk Add Campuses
+          </button>
+          <button class="btn btn-primary" onclick="openCreateCampusModal()">
+            <i class="fa-solid fa-plus"></i> Add Single Campus
+          </button>
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Campus Name</th>
+                <th>Campus Code</th>
+                <th>Status</th>
+                <th>Created Date</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${campuses.length === 0 ? `
+                <tr>
+                  <td colspan="5" class="empty-state">
+                    <i class="fa-solid fa-building-columns"></i>
+                    <h3>No Campuses Created Yet</h3>
+                    <p>Click "Add Single Campus" or "Bulk Add Campuses" to establish your institution's campuses.</p>
+                  </td>
+                </tr>
+              ` : campuses.map(c => `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(c.name)}</strong>
+                  </td>
+                  <td><code>${escapeHtml(c.code)}</code></td>
+                  <td>
+                    <span class="badge badge-${(c.status || 'ACTIVE').toLowerCase()}">${c.status || 'ACTIVE'}</span>
+                  </td>
+                  <td>${formatDate(c.created_at)}</td>
+                  <td>
+                    ${isSuperAdmin ? `
+                      <div style="display:flex; gap:8px;">
+                        <button class="btn btn-outline btn-sm" onclick="openEditCampusModal('${c.id}', '${escapeHtml(c.name).replace(/'/g, "\\'")}', '${escapeHtml(c.code).replace(/'/g, "\\'")}', '${c.status || 'ACTIVE'}')">
+                          <i class="fa-solid fa-pen-to-square"></i> Edit
+                        </button>
+                        <button class="btn btn-secondary btn-sm" onclick="toggleCampusStatus('${c.id}', '${c.name}', '${c.status || 'ACTIVE'}')">
+                          <i class="fa-solid ${c.status === 'INACTIVE' ? 'fa-toggle-on text-success' : 'fa-toggle-off text-danger'}"></i> ${c.status === 'INACTIVE' ? 'Activate' : 'Deactivate'}
+                        </button>
+                      </div>
+                    ` : '<span style="color:var(--text-muted); font-size:0.8rem;">Read-only</span>'}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function openCreateCampusModal() {
+  const html = `
+    <div class="card-header">
+      <h3>Add New Institutional Campus</h3>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-create-campus" onsubmit="handleCreateCampus(event)">
+        <div class="form-group">
+          <label>Campus Name <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" required placeholder="e.g. North Campus" />
+        </div>
+        <div class="form-group">
+          <label>Campus Code</label>
+          <input type="text" name="code" class="form-input" placeholder="e.g. NORTH (Auto-generated if left blank)" />
+        </div>
+        <div class="form-group">
+          <label>Status <span class="text-danger">*</span></label>
+          <select name="status" class="form-select" required>
+            <option value="ACTIVE" selected>ACTIVE</option>
+            <option value="INACTIVE">INACTIVE</option>
+          </select>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-plus-circle"></i> Create Campus
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleCreateCampus(event) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    name: formData.get('name'),
+    code: formData.get('code'),
+    status: formData.get('status')
+  };
+
+  try {
+    const res = await api('/campuses', { method: 'POST', body: payload });
+    showToast(`Campus "${res.name}" created successfully!`, 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
+function openEditCampusModal(campusId, name, code, status) {
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Edit Campus Details</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(name)}</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-edit-campus" onsubmit="handleSaveCampus(event, '${campusId}')">
+        <div class="form-group">
+          <label>Campus Name <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" value="${escapeHtml(name)}" required />
+        </div>
+        <div class="form-group">
+          <label>Campus Code <span class="text-danger">*</span></label>
+          <input type="text" name="code" class="form-input" value="${escapeHtml(code)}" required />
+        </div>
+        <div class="form-group">
+          <label>Status <span class="text-danger">*</span></label>
+          <select name="status" class="form-select" required>
+            <option value="ACTIVE" ${status === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+            <option value="INACTIVE" ${status === 'INACTIVE' ? 'selected' : ''}>INACTIVE</option>
+          </select>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> Save Changes
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSaveCampus(event, campusId) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    name: formData.get('name'),
+    code: formData.get('code'),
+    status: formData.get('status')
+  };
+
+  try {
+    const res = await api(`/campuses/${campusId}`, { method: 'PUT', body: payload });
+    showToast(res.message || 'Campus updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
+async function toggleCampusStatus(campusId, name, currentStatus) {
+  const newStatus = currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+  if (!confirm(`Are you sure you want to change the status of campus "${name}" to ${newStatus}?`)) return;
+
+  try {
+    await api(`/campuses/${campusId}`, {
+      method: 'PUT',
+      body: { name, code: '', status: newStatus }
+    });
+    showToast(`Campus "${name}" is now ${newStatus}.`, 'success');
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  }
+}
+
+function openBulkCampusesModal() {
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3><i class="fa-solid fa-bolt text-warning"></i> Bulk Add Institutional Campuses</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Quickly create multiple campuses in one operation</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-bulk-campuses" onsubmit="handleBulkCampuses(event)">
+        <div class="form-group">
+          <label>Campus List (One per line, format: <code>Campus Name</code> or <code>Campus Name, CODE</code>) <span class="text-danger">*</span></label>
+          <textarea name="text" class="form-textarea" rows="8" required placeholder="North Campus, NORTH&#10;South Campus, SOUTH&#10;West Campus, WEST&#10;Primary Wing, PRI_WING&#10;Senior Secondary Campus, SR_SEC"></textarea>
+          <span style="font-size:0.75rem; color:var(--text-muted);">Codes will be generated automatically if omitted.</span>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-plus-circle"></i> Bulk Create Campuses
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleBulkCampuses(event) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const text = formData.get('text');
+
+  try {
+    const res = await api('/campuses/bulk', {
+      method: 'POST',
+      body: { text }
+    });
+    showToast(`Successfully created ${res.count} campuses!`, 'success');
     closeModal();
     loadCurrentView();
   } catch {

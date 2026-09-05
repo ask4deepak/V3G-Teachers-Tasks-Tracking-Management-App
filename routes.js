@@ -257,16 +257,29 @@ router.put('/profile/password', auth.requireAuth, async (req, res) => {
 
 router.get('/campuses', auth.requireAuth, async (req, res) => {
   try {
+    const { include_inactive } = req.query;
     let campuses = [];
     if (db.isMemoryFallback()) {
-      campuses = db.getMemoryStore().campuses.filter(c => c.status === 'ACTIVE');
+      campuses = db.getMemoryStore().campuses;
+      if (!include_inactive) {
+        campuses = campuses.filter(c => c.status === 'ACTIVE');
+      }
     } else {
-      const q = req.user.isSuperAdmin
-        ? 'SELECT * FROM campuses WHERE status = $1 ORDER BY name ASC'
-        : 'SELECT * FROM campuses WHERE id = ANY($2) AND status = $1 ORDER BY name ASC';
-      const p = req.user.isSuperAdmin ? ['ACTIVE'] : ['ACTIVE', req.user.authorizedCampusIds || []];
-      const result = await db.query(q, p);
-      campuses = result.rows;
+      if (req.user.isSuperAdmin) {
+        const q = include_inactive
+          ? 'SELECT * FROM campuses ORDER BY name ASC'
+          : 'SELECT * FROM campuses WHERE status = $1 ORDER BY name ASC';
+        const p = include_inactive ? [] : ['ACTIVE'];
+        const result = await db.query(q, p);
+        campuses = result.rows;
+      } else {
+        const q = include_inactive
+          ? 'SELECT * FROM campuses WHERE id = ANY($1) ORDER BY name ASC'
+          : 'SELECT * FROM campuses WHERE id = ANY($1) AND status = $2 ORDER BY name ASC';
+        const p = include_inactive ? [req.user.authorizedCampusIds || []] : [req.user.authorizedCampusIds || [], 'ACTIVE'];
+        const result = await db.query(q, p);
+        campuses = result.rows;
+      }
     }
 
     if (!req.user.isSuperAdmin && req.user.authorizedCampusIds) {
@@ -274,6 +287,289 @@ router.get('/campuses', auth.requireAuth, async (req, res) => {
     }
 
     res.json(campuses);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/campuses', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    const { name, code, status = 'ACTIVE' } = req.body;
+    if (!name) return res.status(400).json({ error: 'Campus name is required' });
+
+    const cleanCode = (code || name).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+    const id = uuidv4();
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      if (store.campuses.some(c => c.code === cleanCode)) {
+        return res.status(400).json({ error: `A campus with code "${cleanCode}" already exists.` });
+      }
+      store.campuses.push({
+        id,
+        name: name.trim(),
+        code: cleanCode,
+        status: status || 'ACTIVE',
+        created_at: now,
+        updated_at: now
+      });
+    } else {
+      const existing = await db.query('SELECT id FROM campuses WHERE code = $1', [cleanCode]);
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: `A campus with code "${cleanCode}" already exists.` });
+      }
+      await db.query(`
+        INSERT INTO campuses (id, name, code, status, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, NOW(), NOW())
+      `, [id, name.trim(), cleanCode, status || 'ACTIVE']);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: id,
+      action: 'CAMPUS_CREATED',
+      entityType: 'CAMPUS',
+      entityId: id,
+      description: `Created campus "${name}" with code "${cleanCode}".`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, id, name: name.trim(), code: cleanCode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/campuses/:id', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    const campusId = req.params.id;
+    const { name, code, status = 'ACTIVE' } = req.body;
+    if (!name) return res.status(400).json({ error: 'Campus name is required' });
+
+    const cleanCode = (code || name).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const campus = store.campuses.find(c => c.id === campusId);
+      if (!campus) return res.status(404).json({ error: 'Campus not found' });
+      if (store.campuses.some(c => c.code === cleanCode && c.id !== campusId)) {
+        return res.status(400).json({ error: `Another campus already uses code "${cleanCode}".` });
+      }
+      campus.name = name.trim();
+      campus.code = cleanCode;
+      campus.status = status;
+      campus.updated_at = now;
+    } else {
+      const existing = await db.query('SELECT id FROM campuses WHERE code = $1 AND id != $2', [cleanCode, campusId]);
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: `Another campus already uses code "${cleanCode}".` });
+      }
+      await db.query(`
+        UPDATE campuses
+        SET name = $1, code = $2, status = $3, updated_at = NOW()
+        WHERE id = $4
+      `, [name.trim(), cleanCode, status, campusId]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: campusId,
+      action: 'CAMPUS_UPDATED',
+      entityType: 'CAMPUS',
+      entityId: campusId,
+      description: `Updated campus "${name}" (code: ${cleanCode}, status: ${status}).`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Campus updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/campuses/bulk', auth.requireSuperAdmin, async (req, res) => {
+  try {
+    let { items = [], text = '' } = req.body;
+
+    // Parse multi-line text input if provided
+    if (text && typeof text === 'string') {
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        const parts = line.split(/[,;\t|]/).map(p => p.trim());
+        const name = parts[0];
+        const code = parts[1] || name;
+        const status = parts[2] ? parts[2].toUpperCase() : 'ACTIVE';
+        if (name) {
+          items.push({ name, code, status });
+        }
+      }
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Please provide at least one campus to add.' });
+    }
+
+    const createdCampuses = [];
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      for (const item of items) {
+        const name = (item.name || '').trim();
+        if (!name) continue;
+        let cleanCode = (item.code || name).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+        
+        // Ensure unique code
+        let suffix = 1;
+        const originalCode = cleanCode;
+        while (store.campuses.some(c => c.code === cleanCode)) {
+          cleanCode = `${originalCode}_${suffix++}`;
+        }
+
+        const id = uuidv4();
+        const campusObj = {
+          id,
+          name,
+          code: cleanCode,
+          status: item.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+          created_at: now,
+          updated_at: now
+        };
+        store.campuses.push(campusObj);
+        createdCampuses.push(campusObj);
+      }
+    } else {
+      await db.transaction(async (client) => {
+        for (const item of items) {
+          const name = (item.name || '').trim();
+          if (!name) continue;
+          let cleanCode = (item.code || name).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+          
+          // Ensure unique code
+          let suffix = 1;
+          const originalCode = cleanCode;
+          while (true) {
+            const check = await client.query('SELECT id FROM campuses WHERE code = $1', [cleanCode]);
+            if (check.rows.length === 0) break;
+            cleanCode = `${originalCode}_${suffix++}`;
+          }
+
+          const id = uuidv4();
+          const status = item.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+          await client.query(`
+            INSERT INTO campuses (id, name, code, status, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, NOW(), NOW())
+          `, [id, name, cleanCode, status]);
+
+          createdCampuses.push({ id, name, code: cleanCode, status });
+        }
+      });
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'CAMPUS_CREATED',
+      entityType: 'CAMPUS',
+      entityId: req.user.id,
+      description: `Bulk added ${createdCampuses.length} campuses.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, count: createdCampuses.length, campuses: createdCampuses });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/masters/bulk', auth.requirePermission('masters.create'), async (req, res) => {
+  try {
+    const { master_type, campus_id, items = [], text = '' } = req.body;
+    if (!master_type) return res.status(400).json({ error: 'Master type is required' });
+
+    if (campus_id) auth.assertCampusAccess(req.user, campus_id);
+
+    const parsedItems = [...items];
+    if (text && typeof text === 'string') {
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        const parts = line.split(/[,;\t|]/).map(p => p.trim());
+        const name = parts[0];
+        const code = parts[1] || name;
+        if (name) {
+          parsedItems.push({ name, code });
+        }
+      }
+    }
+
+    if (parsedItems.length === 0) {
+      return res.status(400).json({ error: 'Please provide at least one item to add.' });
+    }
+
+    const createdItems = [];
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      let maxSort = store.master_values
+        .filter(m => m.master_type === master_type)
+        .reduce((max, cur) => Math.max(max, cur.sort_order || 0), 0);
+
+      for (const item of parsedItems) {
+        const name = (item.name || '').trim();
+        if (!name) continue;
+        maxSort++;
+        const code = (item.code || name).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+        const id = uuidv4();
+        const obj = {
+          id,
+          master_type,
+          name,
+          code,
+          campus_id: campus_id || null,
+          status: 'ACTIVE',
+          sort_order: item.sort_order ? parseInt(item.sort_order, 10) : maxSort,
+          created_at: now,
+          updated_at: now
+        };
+        store.master_values.push(obj);
+        createdItems.push(obj);
+      }
+    } else {
+      await db.transaction(async (client) => {
+        const sortRes = await client.query('SELECT COALESCE(MAX(sort_order), 0) as max_sort FROM master_values WHERE master_type = $1', [master_type]);
+        let maxSort = parseInt(sortRes.rows[0].max_sort, 10) || 0;
+
+        for (const item of parsedItems) {
+          const name = (item.name || '').trim();
+          if (!name) continue;
+          maxSort++;
+          const code = (item.code || name).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+          const id = uuidv4();
+          const sortOrder = item.sort_order ? parseInt(item.sort_order, 10) : maxSort;
+
+          await client.query(`
+            INSERT INTO master_values (id, master_type, name, code, campus_id, status, sort_order, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6, NOW(), NOW())
+          `, [id, master_type, name, code, campus_id || null, sortOrder]);
+
+          createdItems.push({ id, master_type, name, code, sort_order: sortOrder });
+        }
+      });
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: campus_id || null,
+      action: 'MASTER_CREATED',
+      entityType: 'MASTER_VALUE',
+      entityId: req.user.id,
+      description: `Bulk added ${createdItems.length} ${master_type} master items.`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, count: createdItems.length, items: createdItems });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
