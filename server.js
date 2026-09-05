@@ -16,6 +16,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Trust reverse proxy (Railway, Heroku, Cloudflare)
+if (isProduction) {
+  app.set('trust proxy', 1);
+}
+
 // Body Parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -92,9 +97,9 @@ async function startServer() {
   });
 
   // Start HTTP Server
-  const server = app.listen(PORT, () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`========================================================`);
-    console.log(`🚀 Teacher Task Tracking System is running on port ${PORT}`);
+    console.log(`🚀 Teacher Task Tracking System is running on port ${PORT} (0.0.0.0)`);
     console.log(`🌐 Local URL: http://localhost:${PORT}`);
     console.log(`🔒 Mode: ${process.env.NODE_ENV || 'development'}`);
     console.log(`========================================================`);
