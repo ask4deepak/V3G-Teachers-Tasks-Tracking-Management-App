@@ -522,6 +522,7 @@ async function renderTeacherTasks(container) {
                   const isPastDue = new Date(t.due_at) < now;
                   const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
                   const isLateBlocked = !t.allow_late_submissions && isPastDue && !isSubmitted;
+                  const canEditSubmitted = isSubmitted && t.allow_edit_submission && !isPaused && !isScheduled && (!isPastDue || t.allow_late_submissions !== false);
 
                   let statusBadge = `<span class="badge badge-${t.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(t.status)}</span>`;
                   if (isScheduled) {
@@ -530,13 +531,30 @@ async function renderTeacherTasks(container) {
                     statusBadge = `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused by Admin</span>`;
                   } else if (isLateBlocked) {
                     statusBadge = `<span class="badge badge-overdue"><i class="fa-solid fa-ban"></i> Closed (No Late Submissions)</span>`;
+                  } else if (canEditSubmitted) {
+                    statusBadge += ` <span class="badge badge-in-progress" style="margin-left:4px;" title="Editing allowed by assignor"><i class="fa-solid fa-pen-to-square"></i> Editable</span>`;
                   }
 
-                  let actionBtn = `
-                    <button class="btn ${isSubmitted ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
-                      <i class="fa-solid ${isSubmitted ? 'fa-eye' : 'fa-pen-to-square'}"></i> ${isSubmitted ? 'View Submission' : (t.draft_flag ? 'Resume Draft' : (isScheduled ? 'View Details' : 'Complete Task'))}
-                    </button>
-                  `;
+                  let actionBtn = '';
+                  if (canEditSubmitted) {
+                    actionBtn = `
+                      <button class="btn btn-outline btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')" title="Edit and update your previous submission">
+                        <i class="fa-solid fa-pen-to-square"></i> Edit Response
+                      </button>
+                    `;
+                  } else if (isSubmitted) {
+                    actionBtn = `
+                      <button class="btn btn-secondary btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
+                        <i class="fa-solid fa-eye"></i> View Response
+                      </button>
+                    `;
+                  } else {
+                    actionBtn = `
+                      <button class="btn btn-primary btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
+                        <i class="fa-solid ${t.draft_flag ? 'fa-pen-to-square' : (isScheduled ? 'fa-eye' : 'fa-paper-plane')}"></i> ${t.draft_flag ? 'Resume Draft' : (isScheduled ? 'View Details' : 'Complete Task')}
+                      </button>
+                    `;
+                  }
 
                   return `
                     <tr>
@@ -694,6 +712,7 @@ async function openTaskSubmissionModal(taskId) {
   const isPaused = task.status === 'PAUSED';
   const isPastDue = new Date(assignment.due_at) < now;
   const isLateBlocked = !task.allow_late_submissions && isPastDue && !isSubmitted;
+  const canEdit = !isScheduled && !isPaused && (!isSubmitted || task.allow_edit_submission) && !isLateBlocked;
 
   const html = `
     <div class="card-header">
@@ -725,6 +744,18 @@ async function openTaskSubmissionModal(taskId) {
         </div>
       ` : ''}
 
+      ${(isSubmitted && task.allow_edit_submission && canEdit) ? `
+        <div style="background:rgba(16,185,129,0.1); border-left:4px solid var(--success); padding:12px; margin-bottom:16px; border-radius:4px;">
+          <strong style="color:var(--success);"><i class="fa-solid fa-circle-check"></i> Response Previously Submitted (${formatDateTime(submission.submitted_at)})</strong>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">The assignor allows editing responses. You can modify your answers below and click <strong>Update Response</strong> to resubmit.</p>
+        </div>
+      ` : (isSubmitted && !task.allow_edit_submission ? `
+        <div style="background:rgba(59,130,246,0.1); border-left:4px solid var(--primary); padding:12px; margin-bottom:16px; border-radius:4px;">
+          <strong style="color:var(--primary);"><i class="fa-solid fa-circle-check"></i> Response Submitted (${formatDateTime(submission.submitted_at)})</strong>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">Your response has been finalized and recorded. Editing after submission is not enabled for this task.</p>
+        </div>
+      ` : '')}
+
       ${task.description ? `<p style="margin-bottom: 20px; color:var(--text-muted);">${escapeHtml(task.description)}</p>` : ''}
       
       <form id="form-task-submission">
@@ -734,17 +765,17 @@ async function openTaskSubmissionModal(taskId) {
               <strong>${idx + 1}. ${escapeHtml(q.label)}</strong>
               ${q.required ? `<span class="text-danger">*</span>` : ''}
             </label>
-            ${renderQuestionInput(q, answers[q.key], isSubmitted || isScheduled || isPaused || isLateBlocked)}
+            ${renderQuestionInput(q, answers[q.key], !canEdit)}
           </div>
         `).join('')}
 
-        ${(!isSubmitted && !isScheduled && !isPaused && !isLateBlocked) ? `
+        ${canEdit ? `
           <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
             <button type="button" class="btn btn-secondary" onclick="submitTaskResponse('${taskId}', true)">
               <i class="fa-regular fa-floppy-disk"></i> Save Draft
             </button>
             <button type="button" class="btn btn-primary" onclick="submitTaskResponse('${taskId}', false)">
-              <i class="fa-solid fa-paper-plane"></i> Submit Final Response
+              <i class="fa-solid ${isSubmitted ? 'fa-floppy-disk' : 'fa-paper-plane'}"></i> ${isSubmitted ? 'Update Response' : 'Submit Final Response'}
             </button>
           </div>
         ` : `
@@ -1367,8 +1398,10 @@ async function openTaskEditor(taskId) {
       open_at: task.open_at ? new Date(task.open_at).toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16),
       deadline_at: task.deadline_at ? new Date(task.deadline_at).toISOString().slice(0, 16) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
       allow_late_submissions: task.allow_late_submissions !== false,
+      allow_edit_submission: task.allow_edit_submission === true,
       status: task.status || 'ACTIVE',
       sort_order: task.sort_order || 0,
+      recurrence_config: task.recurrence_config ? (typeof task.recurrence_config === 'string' ? JSON.parse(task.recurrence_config) : task.recurrence_config) : { frequency: 'MONTHLY', interval: 1, weekdays: [1], dayOfMonth: 1, monthOfYear: 1, deadline_offset_days: 7, end_type: 'NEVER', end_date: '', max_occurrences: '' },
       questions: questions.length > 0 ? questions : [{ key: 'Q1', label: '', type: 'short_text', required: true }],
       campus_ids: campuses,
       audience_rules: {
@@ -1485,12 +1518,109 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           <textarea id="tb-desc" class="form-textarea" placeholder="Provide context and instructions for teachers...">${escapeHtml(tb.description)}</textarea>
         </div>
         <div class="form-group">
-          <label>Task Type</label>
-          <select id="tb-type" class="form-select">
+          <label>Task Type & Repetition Schedule</label>
+          <select id="tb-type" class="form-select" onchange="state.taskBuilder.task_type = this.value; loadCurrentView();">
             <option value="ONE_TIME" ${tb.task_type === 'ONE_TIME' ? 'selected' : ''}>One-Time Task</option>
-            <option value="RECURRING_TEMPLATE" ${tb.task_type === 'RECURRING_TEMPLATE' ? 'selected' : ''}>Recurring Template</option>
+            <option value="RECURRING_TEMPLATE" ${tb.task_type === 'RECURRING_TEMPLATE' ? 'selected' : ''}>Recurring Template (Auto-Repeating Task)</option>
           </select>
         </div>
+
+        ${tb.task_type === 'RECURRING_TEMPLATE' ? `
+          <div style="background:var(--bg-surface); border:1px solid var(--primary); border-radius:var(--radius-md); padding:16px; margin-bottom:16px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; color:var(--primary); font-weight:600;">
+              <i class="fa-solid fa-repeat"></i> Extensive Recurrence Configuration
+            </div>
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+              <div class="form-group">
+                <label>Repeat Frequency</label>
+                <select id="tb-rec-freq" class="form-select" onchange="state.taskBuilder.recurrence_config = state.taskBuilder.recurrence_config || {}; state.taskBuilder.recurrence_config.frequency = this.value; loadCurrentView();">
+                  <option value="DAILY" ${tb.recurrence_config && tb.recurrence_config.frequency === 'DAILY' ? 'selected' : ''}>Daily (Every N Days)</option>
+                  <option value="WEEKLY" ${!tb.recurrence_config || tb.recurrence_config.frequency === 'WEEKLY' ? 'selected' : ''}>Weekly (Specific Days)</option>
+                  <option value="BIWEEKLY" ${tb.recurrence_config && tb.recurrence_config.frequency === 'BIWEEKLY' ? 'selected' : ''}>Bi-Weekly (Every 2 Weeks)</option>
+                  <option value="MONTHLY" ${tb.recurrence_config && tb.recurrence_config.frequency === 'MONTHLY' ? 'selected' : ''}>Monthly</option>
+                  <option value="QUARTERLY" ${tb.recurrence_config && tb.recurrence_config.frequency === 'QUARTERLY' ? 'selected' : ''}>Quarterly (Every 3 Months)</option>
+                  <option value="YEARLY" ${tb.recurrence_config && tb.recurrence_config.frequency === 'YEARLY' ? 'selected' : ''}>Yearly (Annual)</option>
+                  <option value="CUSTOM_DAYS" ${tb.recurrence_config && tb.recurrence_config.frequency === 'CUSTOM_DAYS' ? 'selected' : ''}>Custom Day Interval</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label>Repeat Every (Interval)</label>
+                <input type="number" id="tb-rec-interval" class="form-input" min="1" max="365" value="${(tb.recurrence_config && tb.recurrence_config.interval) || 1}" />
+              </div>
+            </div>
+
+            ${(!tb.recurrence_config || tb.recurrence_config.frequency === 'WEEKLY' || tb.recurrence_config.frequency === 'BIWEEKLY') ? `
+              <div class="form-group">
+                <label>Repeat on Weekdays</label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
+                  ${[
+                    { val: 1, label: 'Mon' },
+                    { val: 2, label: 'Tue' },
+                    { val: 3, label: 'Wed' },
+                    { val: 4, label: 'Thu' },
+                    { val: 5, label: 'Fri' },
+                    { val: 6, label: 'Sat' },
+                    { val: 0, label: 'Sun' }
+                  ].map(day => {
+                    const activeDays = (tb.recurrence_config && tb.recurrence_config.weekdays) || [1];
+                    const isChecked = activeDays.includes(day.val);
+                    return `
+                      <label class="checkbox-label" style="background:var(--border-subtle); padding:6px 12px; border-radius:4px; cursor:pointer;">
+                        <input type="checkbox" name="tb_weekdays" value="${day.val}" ${isChecked ? 'checked' : ''} />
+                        ${day.label}
+                      </label>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            ${(tb.recurrence_config && (tb.recurrence_config.frequency === 'MONTHLY' || tb.recurrence_config.frequency === 'QUARTERLY')) ? `
+              <div class="form-group">
+                <label>Day of Month</label>
+                <select id="tb-rec-day-of-month" class="form-select">
+                  ${Array.from({length: 28}, (_, i) => i + 1).map(d => `
+                    <option value="${d}" ${tb.recurrence_config && tb.recurrence_config.dayOfMonth == d ? 'selected' : ''}>Day ${d} of the month</option>
+                  `).join('')}
+                  <option value="LAST" ${tb.recurrence_config && tb.recurrence_config.dayOfMonth === 'LAST' ? 'selected' : ''}>Last day of the month</option>
+                </select>
+              </div>
+            ` : ''}
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+              <div class="form-group">
+                <label>Instance Deadline (Days from generation)</label>
+                <input type="number" id="tb-rec-deadline-offset" class="form-input" min="1" max="90" value="${(tb.recurrence_config && tb.recurrence_config.deadline_offset_days) || 7}" />
+                <span style="font-size:0.75rem; color:var(--text-muted);">Each generated task instance will be due this many days after creation.</span>
+              </div>
+
+              <div class="form-group">
+                <label>Recurrence End Condition</label>
+                <select id="tb-rec-end-type" class="form-select" onchange="state.taskBuilder.recurrence_config = state.taskBuilder.recurrence_config || {}; state.taskBuilder.recurrence_config.end_type = this.value; loadCurrentView();">
+                  <option value="NEVER" ${!tb.recurrence_config || tb.recurrence_config.end_type === 'NEVER' ? 'selected' : ''}>Never (Repeats indefinitely)</option>
+                  <option value="ON_DATE" ${tb.recurrence_config && tb.recurrence_config.end_type === 'ON_DATE' ? 'selected' : ''}>End on specific date</option>
+                  <option value="AFTER_OCCURRENCES" ${tb.recurrence_config && tb.recurrence_config.end_type === 'AFTER_OCCURRENCES' ? 'selected' : ''}>End after N occurrences</option>
+                </select>
+              </div>
+            </div>
+
+            ${tb.recurrence_config && tb.recurrence_config.end_type === 'ON_DATE' ? `
+              <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="tb-rec-end-date" class="form-input" value="${tb.recurrence_config.end_date || ''}" />
+              </div>
+            ` : ''}
+
+            ${tb.recurrence_config && tb.recurrence_config.end_type === 'AFTER_OCCURRENCES' ? `
+              <div class="form-group">
+                <label>Max Occurrences (e.g. 12)</label>
+                <input type="number" id="tb-rec-max-occurrences" class="form-input" min="1" max="500" value="${tb.recurrence_config.max_occurrences || 12}" />
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
 
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
           <div class="form-group">
@@ -1504,11 +1634,18 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </div>
         </div>
 
-        <div class="form-group">
-          <label class="checkbox-label" style="margin-top:4px;">
-            <input type="checkbox" id="tb-allow-late" ${tb.allow_late_submissions !== false ? 'checked' : ''} />
-            <strong>Allow Teachers to Submit Responses After Deadline</strong>
-          </label>
+        <div style="background:var(--border-subtle); padding:14px; border-radius:var(--radius-md); margin-bottom:16px;">
+          <label style="font-weight:600; margin-bottom:8px; display:block;"><i class="fa-solid fa-sliders"></i> Submission Policies</label>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="tb-allow-late" ${tb.allow_late_submissions !== false ? 'checked' : ''} />
+              <span><strong>Allow Late Submissions:</strong> Teachers can submit responses after the deadline has passed.</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="tb-allow-edit" ${tb.allow_edit_submission === true ? 'checked' : ''} />
+              <span><strong>Allow Response Editing:</strong> Teachers can edit and resubmit their responses even after initial submission.</span>
+            </label>
+          </div>
         </div>
 
         ${tb.editingTaskId ? `
@@ -1738,14 +1875,31 @@ async function renderTaskBuilderStepContent(tb, campuses) {
 
     case 6:
       const activeCount = tb.previewRecipients.filter(r => !tb.recipient_exclusions.includes(r.id)).length;
+      let recurrenceSummary = 'None (One-time assignment)';
+      if (tb.task_type === 'RECURRING_TEMPLATE' && tb.recurrence_config) {
+        const rc = tb.recurrence_config;
+        const freqLabel = rc.frequency || 'MONTHLY';
+        const interval = rc.interval || 1;
+        recurrenceSummary = `${freqLabel} (Every ${interval} ${freqLabel.toLowerCase().replace('_', ' ')})`;
+        if (rc.weekdays && rc.weekdays.length > 0) {
+          const dayNames = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' };
+          recurrenceSummary += ` on ${rc.weekdays.map(d => dayNames[d] || d).join(', ')}`;
+        }
+        if (rc.dayOfMonth) recurrenceSummary += ` (Day ${rc.dayOfMonth})`;
+        if (rc.end_type === 'ON_DATE') recurrenceSummary += ` until ${rc.end_date}`;
+        if (rc.end_type === 'AFTER_OCCURRENCES') recurrenceSummary += ` (Ends after ${rc.max_occurrences} runs)`;
+      }
+
       return `
         <h3>Step 6: Review Task Configuration</h3>
         <div style="background:var(--border-subtle); padding: 16px; border-radius:var(--radius-md); margin: 20px 0; display:flex; flex-direction:column; gap:10px;">
           <div><strong>Title:</strong> ${escapeHtml(tb.title)}</div>
-          <div><strong>Type:</strong> ${tb.task_type}</div>
+          <div><strong>Task Type:</strong> ${tb.task_type === 'RECURRING_TEMPLATE' ? '<span class="badge badge-active"><i class="fa-solid fa-repeat"></i> Recurring Template</span>' : '<span class="badge badge-not-started">One-Time Task</span>'}</div>
+          ${tb.task_type === 'RECURRING_TEMPLATE' ? `<div><strong>Recurrence Schedule:</strong> ${escapeHtml(recurrenceSummary)}</div>` : ''}
           <div><strong>Start / Open Date:</strong> ${formatDateTime(tb.open_at)}</div>
           <div><strong>Deadline:</strong> ${formatDateTime(tb.deadline_at)}</div>
           <div><strong>Late Submissions Allowed:</strong> ${tb.allow_late_submissions !== false ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</div>
+          <div><strong>Response Editing Allowed:</strong> ${tb.allow_edit_submission === true ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</div>
           <div><strong>Questions:</strong> ${tb.questions.length} Fields Configured</div>
           <div><strong>Campuses:</strong> ${tb.campus_ids.length} Campuses Selected</div>
           <div><strong>Final Recipient Count:</strong> <strong class="text-primary">${activeCount} Teachers</strong></div>
@@ -1762,7 +1916,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           <div class="brand-badge" style="background:linear-gradient(135deg, var(--success), #059669);"><i class="fa-solid ${tb.editingTaskId ? 'fa-floppy-disk' : 'fa-rocket'}"></i></div>
           <h3>${tb.editingTaskId ? 'Save Task Modifications' : 'Ready to Publish Task'}</h3>
           <p style="color:var(--text-muted); max-width: 500px; margin: 12px auto 24px;">
-            ${tb.editingTaskId ? 'Saving will update task questions, audience rules, late submission flags, and assign newly matching teachers.' : 'Publishing will recalculate eligible recipients on the server, freeze immutable assignments, and dispatch assignment notification emails to teachers.'}
+            ${tb.editingTaskId ? 'Saving will update task questions, audience rules, submission flags, and assign newly matching teachers.' : 'Publishing will recalculate eligible recipients on the server, freeze immutable assignments, and dispatch assignment notification emails to teachers.'}
           </p>
 
           <div style="display:flex; justify-content:center; gap: 16px;">
@@ -1795,8 +1949,31 @@ function saveTaskBuilderStep(curr, next) {
     tb.open_at = document.getElementById('tb-open-at') ? document.getElementById('tb-open-at').value : tb.open_at;
     tb.deadline_at = document.getElementById('tb-deadline').value;
     tb.allow_late_submissions = document.getElementById('tb-allow-late') ? document.getElementById('tb-allow-late').checked : true;
+    tb.allow_edit_submission = document.getElementById('tb-allow-edit') ? document.getElementById('tb-allow-edit').checked : false;
     if (document.getElementById('tb-status')) {
       tb.status = document.getElementById('tb-status').value;
+    }
+
+    if (tb.task_type === 'RECURRING_TEMPLATE') {
+      const weekdays = Array.from(document.querySelectorAll('input[name="tb_weekdays"]:checked')).map(el => parseInt(el.value, 10));
+      const freq = document.getElementById('tb-rec-freq') ? document.getElementById('tb-rec-freq').value : 'MONTHLY';
+      const interval = document.getElementById('tb-rec-interval') ? parseInt(document.getElementById('tb-rec-interval').value, 10) : 1;
+      const dayOfMonth = document.getElementById('tb-rec-day-of-month') ? document.getElementById('tb-rec-day-of-month').value : 1;
+      const deadlineOffset = document.getElementById('tb-rec-deadline-offset') ? parseInt(document.getElementById('tb-rec-deadline-offset').value, 10) : 7;
+      const endType = document.getElementById('tb-rec-end-type') ? document.getElementById('tb-rec-end-type').value : 'NEVER';
+      const endDate = document.getElementById('tb-rec-end-date') ? document.getElementById('tb-rec-end-date').value : null;
+      const maxOccurrences = document.getElementById('tb-rec-max-occurrences') ? parseInt(document.getElementById('tb-rec-max-occurrences').value, 10) : null;
+
+      tb.recurrence_config = {
+        frequency: freq,
+        interval: interval || 1,
+        weekdays: weekdays.length > 0 ? weekdays : [1],
+        dayOfMonth: dayOfMonth === 'LAST' ? 'LAST' : (parseInt(dayOfMonth, 10) || 1),
+        deadline_offset_days: deadlineOffset || 7,
+        end_type: endType,
+        end_date: endDate,
+        max_occurrences: maxOccurrences
+      };
     }
   }
   tb.step = next;
@@ -1894,6 +2071,8 @@ async function saveTaskDraft() {
         open_at: tb.open_at,
         deadline_at: tb.deadline_at,
         allow_late_submissions: tb.allow_late_submissions,
+        allow_edit_submission: tb.allow_edit_submission,
+        recurrence_config: tb.recurrence_config || null,
         publish_now: false
       }
     });
@@ -1921,6 +2100,8 @@ async function commitPublishTask() {
         open_at: tb.open_at,
         deadline_at: tb.deadline_at,
         allow_late_submissions: tb.allow_late_submissions,
+        allow_edit_submission: tb.allow_edit_submission,
+        recurrence_config: tb.recurrence_config || null,
         publish_now: true
       }
     });
@@ -1948,6 +2129,7 @@ async function commitUpdateTask() {
         open_at: tb.open_at,
         deadline_at: tb.deadline_at,
         allow_late_submissions: tb.allow_late_submissions,
+        allow_edit_submission: tb.allow_edit_submission,
         status: tb.status
       }
     });
@@ -2439,8 +2621,21 @@ async function renderDetailedResponseReport(container) {
     </div>
 
     <!-- Column Customizer Dropdown Drawer (Collapsible) -->
-    <div id="column-customizer-panel" style="display:none; background:var(--bg-surface); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:16px; margin-bottom:16px;">
-      <h4 style="margin-bottom:12px;"><i class="fa-solid fa-table-columns text-primary"></i> Toggle Report Columns</h4>
+    <div id="column-customizer-panel" style="display:${state.filters.isColumnCustomizerOpen ? 'block' : 'none'}; background:var(--bg-surface); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:16px; margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
+        <h4 style="margin:0;"><i class="fa-solid fa-table-columns text-primary"></i> Toggle Report Columns</h4>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="bulkToggleDetailedCols(true)">
+            <i class="fa-solid fa-check-double"></i> Select All
+          </button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="bulkToggleDetailedCols(false)">
+            <i class="fa-solid fa-square"></i> Deselect All
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="resetDefaultDetailedCols()">
+            <i class="fa-solid fa-rotate-left"></i> Reset Defaults
+          </button>
+        </div>
+      </div>
       <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:8px;">
         <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('display_name', this.checked)" ${state.filters.detailedColumns.display_name ? 'checked' : ''} /> Teacher Name</label>
         <label class="checkbox-label"><input type="checkbox" onchange="toggleDetailedCol('employee_code', this.checked)" ${state.filters.detailedColumns.employee_code ? 'checked' : ''} /> Employee Code</label>
@@ -2528,13 +2723,30 @@ function renderSortableHeader(key, label, currentSort, currentDir) {
 }
 
 function toggleColumnCustomizer() {
+  state.filters.isColumnCustomizerOpen = !state.filters.isColumnCustomizerOpen;
   const p = document.getElementById('column-customizer-panel');
-  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  if (p) p.style.display = state.filters.isColumnCustomizerOpen ? 'block' : 'none';
 }
 
 function toggleDetailedCol(colKey, isChecked) {
   if (!state.filters.detailedColumns) state.filters.detailedColumns = {};
   state.filters.detailedColumns[colKey] = isChecked;
+  state.filters.isColumnCustomizerOpen = true;
+  loadCurrentView();
+}
+
+function bulkToggleDetailedCols(checkAll) {
+  if (!state.filters.detailedColumns) state.filters.detailedColumns = {};
+  for (const k of Object.keys(state.filters.detailedColumns)) {
+    state.filters.detailedColumns[k] = Boolean(checkAll);
+  }
+  state.filters.isColumnCustomizerOpen = true;
+  loadCurrentView();
+}
+
+function resetDefaultDetailedCols() {
+  state.filters.detailedColumns = null;
+  state.filters.isColumnCustomizerOpen = true;
   loadCurrentView();
 }
 
@@ -2551,12 +2763,96 @@ async function renderUsersDirectory(container) {
   const canManageAccess = state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN';
   const canEditUsers = hasPermission('users.edit') || canManageAccess;
 
+  // Filters state
+  const search = (state.filters.userSearch || '').toLowerCase();
+  const campusFilter = state.filters.userCampus || '';
+  const typeFilter = state.filters.userType || '';
+  const statusFilter = state.filters.userStatus || '';
+  const sortBy = state.filters.userSortBy || 'display_name';
+  const sortDir = state.filters.userSortDir || 'asc';
+
+  let filteredUsers = users.filter(u => {
+    if (campusFilter && u.campus_id !== campusFilter) return false;
+    if (typeFilter && u.user_type !== typeFilter) return false;
+    if (statusFilter && (u.status || 'ACTIVE') !== statusFilter) return false;
+    if (search) {
+      const match = (u.display_name || '').toLowerCase().includes(search) ||
+                    (u.email || '').toLowerCase().includes(search) ||
+                    (u.employee_code || '').toLowerCase().includes(search) ||
+                    (u.campus_name || '').toLowerCase().includes(search);
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  filteredUsers.sort((a, b) => {
+    const valA = a[sortBy] !== undefined && a[sortBy] !== null ? String(a[sortBy]) : '';
+    const valB = b[sortBy] !== undefined && b[sortBy] !== null ? String(b[sortBy]) : '';
+    const cmp = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  function renderUserSortHeader(key, label) {
+    const isSorted = sortBy === key;
+    const icon = isSorted ? (sortDir === 'asc' ? 'fa-arrow-up-short-wide' : 'fa-arrow-down-wide-short') : 'fa-sort';
+    const newDir = isSorted && sortDir === 'asc' ? 'desc' : 'asc';
+    return `
+      <th style="cursor:pointer; user-select:none;" onclick="state.filters.userSortBy = '${key}'; state.filters.userSortDir = '${newDir}'; loadCurrentView();">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span>${escapeHtml(label)}</span>
+          <i class="fa-solid ${icon}" style="font-size:0.75rem; color:${isSorted ? 'var(--primary)' : 'var(--text-subtle)'};"></i>
+        </div>
+      </th>
+    `;
+  }
+
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
-      <h2><i class="fa-solid fa-chalkboard-user"></i> Faculty & Staff Directory</h2>
+      <div>
+        <h2><i class="fa-solid fa-chalkboard-user"></i> Faculty & Staff Directory</h2>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Showing ${filteredUsers.length} of ${users.length} members</span>
+      </div>
       ${hasPermission('users.create') ? `
         <button class="btn btn-primary" onclick="openCreateUserModal()">
           <i class="fa-solid fa-user-plus"></i> Add User
+        </button>
+      ` : ''}
+    </div>
+
+    <!-- Search & Filter Bar -->
+    <div class="filter-bar" style="margin-bottom:16px;">
+      <div class="search-input-wrapper" style="flex:1; min-width:220px;">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" class="form-input" placeholder="Search by name, email, employee code..." value="${escapeHtml(state.filters.userSearch || '')}" oninput="state.filters.userSearch = this.value; loadCurrentView();" />
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.userCampus = this.value; loadCurrentView();">
+          <option value="">All Campuses</option>
+          ${campuses.map(c => `<option value="${c.id}" ${c.id === campusFilter ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.userType = this.value; loadCurrentView();">
+          <option value="">All Roles / Types</option>
+          <option value="TEACHER" ${typeFilter === 'TEACHER' ? 'selected' : ''}>Teacher</option>
+          <option value="ADMIN" ${typeFilter === 'ADMIN' ? 'selected' : ''}>Admin</option>
+          <option value="SUPER_ADMIN" ${typeFilter === 'SUPER_ADMIN' ? 'selected' : ''}>Super Admin</option>
+        </select>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.userStatus = this.value; loadCurrentView();">
+          <option value="">All Statuses</option>
+          <option value="ACTIVE" ${statusFilter === 'ACTIVE' ? 'selected' : ''}>Active</option>
+          <option value="INACTIVE" ${statusFilter === 'INACTIVE' ? 'selected' : ''}>Inactive</option>
+        </select>
+      </div>
+
+      ${(search || campusFilter || typeFilter || statusFilter) ? `
+        <button class="btn btn-secondary btn-sm" onclick="state.filters.userSearch = ''; state.filters.userCampus = ''; state.filters.userType = ''; state.filters.userStatus = ''; loadCurrentView();">
+          <i class="fa-solid fa-xmark"></i> Clear Filters
         </button>
       ` : ''}
     </div>
@@ -2567,18 +2863,20 @@ async function renderUsersDirectory(container) {
           <table class="table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Employee Code</th>
-                <th>User Type</th>
-                <th>Campus</th>
+                ${renderUserSortHeader('display_name', 'Name')}
+                ${renderUserSortHeader('email', 'Email')}
+                ${renderUserSortHeader('employee_code', 'Employee Code')}
+                ${renderUserSortHeader('user_type', 'User Type')}
+                ${renderUserSortHeader('campus_name', 'Campus')}
                 <th>Class Teacher</th>
-                <th>Status</th>
+                ${renderUserSortHeader('status', 'Status')}
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              ${users.map(u => `
+              ${filteredUsers.length === 0 ? `
+                <tr><td colspan="8" class="empty-state">No faculty members found matching your search or filters.</td></tr>
+              ` : filteredUsers.map(u => `
                 <tr>
                   <td><strong>${escapeHtml(u.display_name)}</strong></td>
                   <td>${escapeHtml(u.email)}</td>
@@ -3789,37 +4087,145 @@ async function handleImportCommit() {
   } catch {}
 }
 
-// Audit Logs Timeline
+// Audit Logs Timeline with Sorting, Full Timestamp, and Multi-Criteria Filters
 async function renderAuditLogs(container) {
-  const logs = await api('/audit-logs');
+  const search = state.filters.auditSearch || '';
+  const campusFilter = state.filters.auditCampus || '';
+  const actionFilter = state.filters.auditAction || '';
+  const entityFilter = state.filters.auditEntityType || '';
+  const sortBy = state.filters.auditSortBy || 'created_at';
+  const sortDir = state.filters.auditSortDir || 'desc';
+
+  const queryParams = new URLSearchParams();
+  if (search) queryParams.set('search', search);
+  if (campusFilter) queryParams.set('campus_id', campusFilter);
+  if (actionFilter) queryParams.set('action', actionFilter);
+  if (entityFilter) queryParams.set('entity_type', entityFilter);
+  queryParams.set('sort_by', sortBy);
+  queryParams.set('sort_dir', sortDir);
+
+  const [logs, campuses] = await Promise.all([
+    api(`/audit-logs?${queryParams.toString()}`),
+    api('/campuses')
+  ]);
+
+  function renderAuditSortHeader(key, label) {
+    const isSorted = sortBy === key;
+    const icon = isSorted ? (sortDir === 'asc' ? 'fa-arrow-up-short-wide' : 'fa-arrow-down-wide-short') : 'fa-sort';
+    const newDir = isSorted && sortDir === 'asc' ? 'desc' : 'asc';
+    return `
+      <th style="cursor:pointer; user-select:none;" onclick="state.filters.auditSortBy = '${key}'; state.filters.auditSortDir = '${newDir}'; loadCurrentView();">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span>${escapeHtml(label)}</span>
+          <i class="fa-solid ${icon}" style="font-size:0.75rem; color:${isSorted ? 'var(--primary)' : 'var(--text-subtle)'};"></i>
+        </div>
+      </th>
+    `;
+  }
 
   container.innerHTML = `
-    <div class="card">
-      <div class="card-header">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+      <div>
         <h2><i class="fa-solid fa-shield-halved"></i> Institutional Audit Trail</h2>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Immutable server-side audit logs of administrative mutations (${logs.length} entries)</span>
       </div>
+      <button class="btn btn-secondary btn-sm" onclick="loadCurrentView()">
+        <i class="fa-solid fa-rotate"></i> Refresh Logs
+      </button>
+    </div>
+
+    <!-- Filter Bar -->
+    <div class="filter-bar" style="margin-bottom:16px;">
+      <div class="search-input-wrapper" style="flex:1; min-width:200px;">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" class="form-input" placeholder="Search description, user, action..." value="${escapeHtml(search)}" oninput="state.filters.auditSearch = this.value; loadCurrentView();" />
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.auditCampus = this.value; loadCurrentView();">
+          <option value="">All Campuses</option>
+          ${campuses.map(c => `<option value="${c.id}" ${c.id === campusFilter ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.auditAction = this.value; loadCurrentView();">
+          <option value="">All Actions</option>
+          <option value="TASK_CREATED" ${actionFilter === 'TASK_CREATED' ? 'selected' : ''}>TASK_CREATED</option>
+          <option value="TASK_PUBLISHED" ${actionFilter === 'TASK_PUBLISHED' ? 'selected' : ''}>TASK_PUBLISHED</option>
+          <option value="TASK_STATUS_CHANGED" ${actionFilter === 'TASK_STATUS_CHANGED' ? 'selected' : ''}>TASK_STATUS_CHANGED</option>
+          <option value="ROLE_CREATED" ${actionFilter === 'ROLE_CREATED' ? 'selected' : ''}>ROLE_CREATED</option>
+          <option value="ROLE_UPDATED" ${actionFilter === 'ROLE_UPDATED' ? 'selected' : ''}>ROLE_UPDATED</option>
+          <option value="USER_CREATED" ${actionFilter === 'USER_CREATED' ? 'selected' : ''}>USER_CREATED</option>
+          <option value="USER_UPDATED" ${actionFilter === 'USER_UPDATED' ? 'selected' : ''}>USER_UPDATED</option>
+          <option value="USER_ACCESS_UPDATED" ${actionFilter === 'USER_ACCESS_UPDATED' ? 'selected' : ''}>USER_ACCESS_UPDATED</option>
+          <option value="MASTER_VALUE_CREATED" ${actionFilter === 'MASTER_VALUE_CREATED' ? 'selected' : ''}>MASTER_VALUE_CREATED</option>
+          <option value="MASTER_VALUE_UPDATED" ${actionFilter === 'MASTER_VALUE_UPDATED' ? 'selected' : ''}>MASTER_VALUE_UPDATED</option>
+          <option value="GROUP_CREATED" ${actionFilter === 'GROUP_CREATED' ? 'selected' : ''}>GROUP_CREATED</option>
+          <option value="GROUP_UPDATED" ${actionFilter === 'GROUP_UPDATED' ? 'selected' : ''}>GROUP_UPDATED</option>
+          <option value="GROUP_MEMBERSHIP_APPROVED" ${actionFilter === 'GROUP_MEMBERSHIP_APPROVED' ? 'selected' : ''}>GROUP_MEMBERSHIP_APPROVED</option>
+          <option value="BULK_IMPORT_COMMITTED" ${actionFilter === 'BULK_IMPORT_COMMITTED' ? 'selected' : ''}>BULK_IMPORT_COMMITTED</option>
+        </select>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <select class="form-select" onchange="state.filters.auditEntityType = this.value; loadCurrentView();">
+          <option value="">All Entities</option>
+          <option value="TASK" ${entityFilter === 'TASK' ? 'selected' : ''}>TASK</option>
+          <option value="USER" ${entityFilter === 'USER' ? 'selected' : ''}>USER</option>
+          <option value="ROLE" ${entityFilter === 'ROLE' ? 'selected' : ''}>ROLE</option>
+          <option value="GROUP" ${entityFilter === 'GROUP' ? 'selected' : ''}>GROUP</option>
+          <option value="MASTER_VALUE" ${entityFilter === 'MASTER_VALUE' ? 'selected' : ''}>MASTER_VALUE</option>
+          <option value="CAMPUS" ${entityFilter === 'CAMPUS' ? 'selected' : ''}>CAMPUS</option>
+          <option value="IMPORT" ${entityFilter === 'IMPORT' ? 'selected' : ''}>IMPORT</option>
+        </select>
+      </div>
+
+      ${(search || campusFilter || actionFilter || entityFilter) ? `
+        <button class="btn btn-secondary btn-sm" onclick="state.filters.auditSearch = ''; state.filters.auditCampus = ''; state.filters.auditAction = ''; state.filters.auditEntityType = ''; loadCurrentView();">
+          <i class="fa-solid fa-xmark"></i> Clear Filters
+        </button>
+      ` : ''}
+    </div>
+
+    <div class="card">
       <div class="card-body">
         <div class="table-responsive">
           <table class="table">
             <thead>
               <tr>
-                <th>Date / Time</th>
-                <th>User</th>
-                <th>Campus</th>
-                <th>Action</th>
-                <th>Entity</th>
+                ${renderAuditSortHeader('created_at', 'Date & Time')}
+                ${renderAuditSortHeader('user_display_name', 'Actor / User')}
+                ${renderAuditSortHeader('campus_name', 'Campus Scope')}
+                ${renderAuditSortHeader('action', 'Action')}
+                ${renderAuditSortHeader('entity_type', 'Entity')}
                 <th>Description</th>
+                <th style="text-align:right;">Payload</th>
               </tr>
             </thead>
             <tbody>
-              ${logs.map(l => `
+              ${logs.length === 0 ? `
+                <tr><td colspan="7" class="empty-state">No audit log records match your active filters.</td></tr>
+              ` : logs.map(l => `
                 <tr>
-                  <td>${formatDateTime(l.created_at)}</td>
-                  <td><strong>${escapeHtml(l.user_display_name)}</strong></td>
-                  <td>${escapeHtml(l.campus_name)}</td>
-                  <td><code>${escapeHtml(l.action)}</code></td>
-                  <td><span class="badge badge-not-started">${escapeHtml(l.entity_type)}</span></td>
+                  <td style="white-space:nowrap; font-size:0.85rem;">
+                    <strong>${formatFullDateTime(l.created_at)}</strong>
+                  </td>
+                  <td>
+                    <strong>${escapeHtml(l.user_display_name || 'System')}</strong>
+                    ${l.user_email ? `<div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(l.user_email)}</div>` : ''}
+                  </td>
+                  <td>${escapeHtml(l.campus_name || 'Global')}</td>
+                  <td><code style="font-weight:600;">${escapeHtml(l.action)}</code></td>
+                  <td><span class="badge badge-not-started">${escapeHtml(l.entity_type || 'N/A')}</span></td>
                   <td>${escapeHtml(l.description)}</td>
+                  <td style="text-align:right;">
+                    ${l.metadata && Object.keys(typeof l.metadata === 'string' ? JSON.parse(l.metadata || '{}') : l.metadata).length > 0 ? `
+                      <button class="btn btn-outline btn-sm" onclick='viewAuditMetadata(${JSON.stringify(typeof l.metadata === 'string' ? JSON.parse(l.metadata) : l.metadata)})' title="View JSON Metadata">
+                        <i class="fa-solid fa-code"></i> JSON
+                      </button>
+                    ` : '<span class="text-muted" style="font-size:0.75rem;">-</span>'}
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
@@ -3828,6 +4234,36 @@ async function renderAuditLogs(container) {
       </div>
     </div>
   `;
+}
+
+function formatFullDateTime(d) {
+  if (!d) return 'N/A';
+  const dateObj = new Date(d);
+  return dateObj.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  });
+}
+
+function viewAuditMetadata(meta) {
+  const html = `
+    <div class="card-header">
+      <h3>Audit Event Metadata</h3>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <pre style="background:var(--border-subtle); padding:16px; border-radius:6px; font-size:0.85rem; overflow-x:auto; max-height:400px;">${escapeHtml(JSON.stringify(meta, null, 2))}</pre>
+      <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  `;
+  openModal(html);
 }
 
 // Roles & Permissions Matrix Management

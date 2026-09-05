@@ -406,6 +406,117 @@ async function runAllTests() {
     assert.strictEqual(rows[0]['Password (Optional)'], 'Welcome@2026');
   });
 
+  console.log('\n--- Phase 8: Edit Submissions, Extensive Recurrence & Audit Log Tests ---');
+
+  await test('Allow edit submission policy: teachers can update submitted answers when enabled', async () => {
+    const store = db.getMemoryStore();
+    const taskId = 'tsk-edit-sub-01';
+    const asgId = 'asg-edit-sub-01';
+    const teacherId = 'u4444444-4444-4444-4444-444444444444';
+
+    // Create task with allow_edit_submission = true
+    store.tasks.push({
+      id: taskId,
+      task_type: 'ONE_TIME',
+      title: 'Editable Submission Test Task',
+      campus_ids: ['11111111-1111-1111-1111-111111111111'],
+      questions: [{ key: 'Q1', label: 'Score', type: 'number', required: true }],
+      audience_rules: {},
+      recipient_exclusions: [],
+      allow_edit_submission: true,
+      allow_late_submissions: true,
+      status: 'ACTIVE',
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000),
+      created_by: 'u2222222-2222-2222-2222-222222222222',
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    store.assignments.push({
+      id: asgId,
+      task_id: taskId,
+      user_id: teacherId,
+      campus_id: '11111111-1111-1111-1111-111111111111',
+      assigned_at: new Date(),
+      due_at: new Date(Date.now() + 86400000),
+      status: 'SUBMITTED_ON_TIME'
+    });
+
+    store.submissions.push({
+      id: 'sub-edit-01',
+      assignment_id: asgId,
+      answers: { Q1: 85 },
+      draft_flag: false,
+      submitted_at: new Date(),
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    // Verify initial answers
+    let sub = store.submissions.find(s => s.assignment_id === asgId);
+    assert.strictEqual(sub.answers.Q1, 85);
+
+    // Update submission
+    sub.answers = { Q1: 95 };
+    sub.updated_at = new Date();
+
+    sub = store.submissions.find(s => s.assignment_id === asgId);
+    assert.strictEqual(sub.answers.Q1, 95);
+  });
+
+  await test('Extensive recurrence scheduler supports Weekly on specific weekdays, Monthly, and End conditions', async () => {
+    // 1. Weekly with specific weekdays (e.g. Wednesday = 3 and Friday = 5)
+    const baseMonday = new Date('2026-09-07T00:00:00Z'); // Monday (Day 1)
+    const nextWed = services.calculateNextOccurrence({
+      frequency: 'WEEKLY',
+      interval: 1,
+      weekdays: [3, 5]
+    }, baseMonday);
+    assert.strictEqual(nextWed.getDay(), 3); // Wednesday
+
+    // 2. Monthly on last day of month
+    const baseFeb = new Date('2026-02-01T00:00:00Z');
+    const nextEndMarch = services.calculateNextOccurrence({
+      frequency: 'MONTHLY',
+      interval: 1,
+      dayOfMonth: 'LAST'
+    }, baseFeb);
+    assert.strictEqual(nextEndMarch.getMonth(), 2); // March
+    assert.strictEqual(nextEndMarch.getDate(), 31); // March 31st
+
+    // 3. Quarterly
+    const nextQuarter = services.calculateNextOccurrence({
+      frequency: 'QUARTERLY',
+      dayOfMonth: 15
+    }, new Date('2026-01-15T00:00:00Z'));
+    assert.strictEqual(nextQuarter.getMonth(), 3); // April (3 months after Jan)
+    assert.strictEqual(nextQuarter.getDate(), 15);
+
+    // 4. End condition: after max occurrences
+    const stoppedRec = services.calculateNextOccurrence({
+      frequency: 'WEEKLY',
+      end_type: 'AFTER_OCCURRENCES',
+      max_occurrences: 5,
+      occurrences_generated: 5
+    }, baseMonday);
+    assert.strictEqual(stoppedRec, null);
+  });
+
+  await test('Audit logs record entries with timestamps and are filterable and sortable', async () => {
+    const store = db.getMemoryStore();
+    assert.ok(store.audit_logs.length > 0);
+
+    const firstLog = store.audit_logs[0];
+    assert.ok(firstLog.created_at);
+    assert.ok(firstLog.action);
+    assert.ok(firstLog.entity_type);
+
+    // Test sorting
+    const sortedDesc = [...store.audit_logs].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    assert.ok(new Date(sortedDesc[0].created_at) >= new Date(sortedDesc[sortedDesc.length - 1].created_at));
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

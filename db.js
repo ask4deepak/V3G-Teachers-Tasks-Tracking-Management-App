@@ -452,6 +452,7 @@ async function seedMemoryStore() {
       status: 'ACTIVE',
       sort_order: 1,
       allow_late_submissions: true,
+      allow_edit_submission: true,
       open_at: new Date(Date.now() - 3600000), // Opened 1 hour ago
       deadline_at: deadline,
       published_at: new Date(),
@@ -554,6 +555,7 @@ async function initDb() {
       await pool.query(`
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_edit_submission BOOLEAN NOT NULL DEFAULT FALSE;
       `);
 
       // Execute seed.sql

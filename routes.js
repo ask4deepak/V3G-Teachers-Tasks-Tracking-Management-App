@@ -1342,6 +1342,7 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
           is_scheduled: isOpenFuture,
           sort_order: t.sort_order || 0,
           allow_late_submissions: t.allow_late_submissions !== false,
+          allow_edit_submission: t.allow_edit_submission === true,
           total_assigned: total,
           submitted_on_time: subOnTime,
           submitted_late: subLate,
@@ -1388,6 +1389,7 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
           is_scheduled: isOpenFuture,
           sort_order: t.sort_order || 0,
           allow_late_submissions: t.allow_late_submissions !== false,
+          allow_edit_submission: t.allow_edit_submission === true,
           completion_rate: total > 0 ? Math.round((comp / total) * 100) : 0
         };
       });
@@ -1412,6 +1414,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       open_at,
       deadline_at,
       allow_late_submissions = true,
+      allow_edit_submission = false,
       sort_order = 0,
       publish_now = false,
       recurrence_config = null
@@ -1449,6 +1452,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
         open_at: openDate,
         deadline_at: deadline,
         allow_late_submissions: Boolean(allow_late_submissions),
+        allow_edit_submission: Boolean(allow_edit_submission),
         sort_order: Number(sort_order) || 0,
         published_at: null,
         published_by: null,
@@ -1461,9 +1465,9 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       });
     } else {
       await db.query(`
-        INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, status, open_at, deadline_at, allow_late_submissions, sort_order, created_by, recurrence_config, next_generation_at, recurrence_status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9, $10, $11, $12, $13, $14, $15, $16)
-      `, [taskId, task_type, title, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), openDate, deadline, Boolean(allow_late_submissions), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
+        INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, status, open_at, deadline_at, allow_late_submissions, allow_edit_submission, sort_order, created_by, recurrence_config, next_generation_at, recurrence_status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      `, [taskId, task_type, title, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), openDate, deadline, Boolean(allow_late_submissions), Boolean(allow_edit_submission), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
     }
 
     await services.logAudit({
@@ -1501,6 +1505,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
       open_at,
       deadline_at,
       allow_late_submissions,
+      allow_edit_submission,
       status,
       sort_order
     } = req.body;
@@ -1527,6 +1532,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
     const updatedOpenAt = open_at ? new Date(open_at) : task.open_at;
     const updatedDeadlineAt = deadline_at ? new Date(deadline_at) : task.deadline_at;
     const updatedAllowLate = allow_late_submissions !== undefined ? Boolean(allow_late_submissions) : (task.allow_late_submissions !== false);
+    const updatedAllowEdit = allow_edit_submission !== undefined ? Boolean(allow_edit_submission) : (task.allow_edit_submission === true);
     const updatedSortOrder = sort_order !== undefined ? Number(sort_order) : (task.sort_order || 0);
     const updatedStatus = status || task.status;
 
@@ -1540,6 +1546,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
       task.open_at = updatedOpenAt;
       task.deadline_at = updatedDeadlineAt;
       task.allow_late_submissions = updatedAllowLate;
+      task.allow_edit_submission = updatedAllowEdit;
       task.sort_order = updatedSortOrder;
       task.status = updatedStatus;
       task.updated_at = now;
@@ -1555,10 +1562,11 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
             open_at = $7,
             deadline_at = $8,
             allow_late_submissions = $9,
-            sort_order = $10,
-            status = $11,
+            allow_edit_submission = $10,
+            sort_order = $11,
+            status = $12,
             updated_at = NOW()
-        WHERE id = $12
+        WHERE id = $13
       `, [
         title || null,
         description !== undefined ? description : null,
@@ -1569,6 +1577,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
         updatedOpenAt,
         updatedDeadlineAt,
         updatedAllowLate,
+        updatedAllowEdit,
         updatedSortOrder,
         updatedStatus,
         taskId
@@ -1781,6 +1790,7 @@ router.get('/teacher/tasks', auth.requireAuth, async (req, res) => {
           open_at: t.open_at,
           is_scheduled: isScheduled,
           allow_late_submissions: t.allow_late_submissions !== false,
+          allow_edit_submission: t.allow_edit_submission === true,
           sort_order: t.sort_order || 0,
           assigned_at: a.assigned_at,
           due_at: a.due_at,
@@ -1795,7 +1805,7 @@ router.get('/teacher/tasks', auth.requireAuth, async (req, res) => {
     } else {
       const q = `
         SELECT a.id as assignment_id, a.task_id, t.title, t.description, t.status as task_status,
-        t.open_at, t.allow_late_submissions, t.sort_order, a.assigned_at, a.due_at, a.status,
+        t.open_at, t.allow_late_submissions, t.allow_edit_submission, t.sort_order, a.assigned_at, a.due_at, a.status,
         s.submitted_at, s.draft_flag, s.answers
         FROM assignments a
         JOIN tasks t ON a.task_id = t.id
@@ -1807,6 +1817,7 @@ router.get('/teacher/tasks', auth.requireAuth, async (req, res) => {
       tasks = result.rows.map(r => ({
         ...r,
         allow_late_submissions: r.allow_late_submissions !== false,
+        allow_edit_submission: r.allow_edit_submission === true,
         is_scheduled: r.open_at && new Date(r.open_at) > now
       }));
     }
@@ -1857,6 +1868,7 @@ router.get('/teacher/tasks/:taskId', auth.requireAuth, async (req, res) => {
       task: {
         ...task,
         allow_late_submissions: task.allow_late_submissions !== false,
+        allow_edit_submission: task.allow_edit_submission === true,
         is_scheduled: isScheduled,
         questions: typeof task.questions === 'string' ? JSON.parse(task.questions) : task.questions
       },
@@ -1877,15 +1889,23 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
 
     let task;
     let assignment;
+    let existingSubmission;
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
       task = store.tasks.find(t => t.id === taskId);
       assignment = store.assignments.find(a => a.task_id === taskId && a.user_id === userId);
+      if (assignment) {
+        existingSubmission = store.submissions.find(s => s.assignment_id === assignment.id);
+      }
     } else {
       const tRes = await db.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
       task = tRes.rows[0];
       const aRes = await db.query('SELECT * FROM assignments WHERE task_id = $1 AND user_id = $2', [taskId, userId]);
       assignment = aRes.rows[0];
+      if (assignment) {
+        const sRes = await db.query('SELECT * FROM submissions WHERE assignment_id = $1', [assignment.id]);
+        existingSubmission = sRes.rows[0];
+      }
     }
 
     if (!task) return res.status(404).json({ error: 'Task not found' });
@@ -1900,8 +1920,14 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
       return res.status(400).json({ error: `This task is scheduled to open on ${new Date(task.open_at).toLocaleString()}. Submissions are not open yet.` });
     }
 
+    // Check if task was already submitted and editing is not permitted
+    const wasAlreadySubmitted = existingSubmission && !existingSubmission.draft_flag;
+    if (wasAlreadySubmitted && task.allow_edit_submission !== true) {
+      return res.status(400).json({ error: 'Responses cannot be edited after final submission for this task.' });
+    }
+
     const dueAt = new Date(assignment.due_at);
-    if (!is_draft && task.allow_late_submissions === false && now > dueAt) {
+    if (!is_draft && task.allow_late_submissions === false && now > dueAt && !wasAlreadySubmitted) {
       return res.status(400).json({ error: 'The deadline for this task has passed and late submissions are not allowed by the assignor.' });
     }
 
@@ -1913,7 +1939,7 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
       if (sub) {
         sub.answers = answers;
         sub.draft_flag = Boolean(is_draft);
-        sub.submitted_at = is_draft ? null : now;
+        sub.submitted_at = is_draft ? null : (wasAlreadySubmitted ? sub.submitted_at : now);
         sub.updated_at = now;
       } else {
         sub = {
@@ -1931,12 +1957,13 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
       assignment.updated_at = now;
     } else {
       await db.transaction(async (client) => {
+        const subTime = is_draft ? null : (wasAlreadySubmitted && existingSubmission.submitted_at ? existingSubmission.submitted_at : now);
         await client.query(`
           INSERT INTO submissions (id, assignment_id, answers, draft_flag, submitted_at, updated_at)
           VALUES ($1, $2, $3, $4, $5, $6)
           ON CONFLICT (assignment_id)
-          DO UPDATE SET answers = $3, draft_flag = $4, submitted_at = $5, updated_at = $6
-        `, [uuidv4(), assignment.id, JSON.stringify(answers), Boolean(is_draft), is_draft ? null : now, now]);
+          DO UPDATE SET answers = $3, draft_flag = $4, submitted_at = COALESCE(submissions.submitted_at, $5), updated_at = $6
+        `, [uuidv4(), assignment.id, JSON.stringify(answers), Boolean(is_draft), subTime, now]);
 
         await client.query('UPDATE assignments SET status = $1, updated_at = $2 WHERE id = $3', [computedStatus, now, assignment.id]);
       });
@@ -1945,7 +1972,7 @@ router.post('/teacher/tasks/:taskId/submit', auth.requireAuth, async (req, res) 
     res.json({
       success: true,
       status: computedStatus,
-      message: is_draft ? 'Draft saved successfully' : 'Task response submitted successfully'
+      message: is_draft ? 'Draft saved successfully' : (wasAlreadySubmitted ? 'Task response updated successfully' : 'Task response submitted successfully')
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2788,7 +2815,7 @@ router.put('/roles/:id', auth.requireSuperAdmin, async (req, res) => {
 
 router.get('/audit-logs', auth.requirePermission('audit.view'), async (req, res) => {
   try {
-    const { campus_id, action, search } = req.query;
+    const { campus_id, action, entity_type, search, from_date, to_date, sort_by = 'created_at', sort_dir = 'desc', limit = 200 } = req.query;
     let logs = [];
 
     if (db.isMemoryFallback()) {
@@ -2798,9 +2825,9 @@ router.get('/audit-logs', auth.requirePermission('audit.view'), async (req, res)
         const c = store.campuses.find(cmp => cmp.id === l.campus_id);
         return {
           ...l,
-          user_display_name: u ? u.display_name : 'System',
+          user_display_name: u ? u.display_name : (l.user_id ? 'User' : 'System'),
           user_email: u ? u.email : '',
-          campus_name: c ? c.name : 'Global'
+          campus_name: c ? c.name : 'Global / Multi-Campus'
         };
       });
 
@@ -2809,7 +2836,39 @@ router.get('/audit-logs', auth.requirePermission('audit.view'), async (req, res)
       }
       if (campus_id) logs = logs.filter(l => l.campus_id === campus_id);
       if (action) logs = logs.filter(l => l.action === action);
-      if (search) logs = logs.filter(l => l.description.toLowerCase().includes(search.toLowerCase()));
+      if (entity_type) logs = logs.filter(l => l.entity_type === entity_type);
+      if (from_date) {
+        const fromT = new Date(from_date).getTime();
+        logs = logs.filter(l => new Date(l.created_at).getTime() >= fromT);
+      }
+      if (to_date) {
+        const toT = new Date(to_date).getTime() + 86400000;
+        logs = logs.filter(l => new Date(l.created_at).getTime() <= toT);
+      }
+      if (search) {
+        const qLower = search.toLowerCase();
+        logs = logs.filter(l =>
+          (l.description && l.description.toLowerCase().includes(qLower)) ||
+          (l.action && l.action.toLowerCase().includes(qLower)) ||
+          (l.user_display_name && l.user_display_name.toLowerCase().includes(qLower)) ||
+          (l.entity_type && l.entity_type.toLowerCase().includes(qLower))
+        );
+      }
+
+      // Sort
+      logs.sort((a, b) => {
+        let valA = a[sort_by] !== undefined ? a[sort_by] : '';
+        let valB = b[sort_by] !== undefined ? b[sort_by] : '';
+        if (sort_by === 'created_at') {
+          valA = new Date(valA).getTime();
+          valB = new Date(valB).getTime();
+          return sort_dir === 'asc' ? valA - valB : valB - valA;
+        }
+        const cmp = String(valA).localeCompare(String(valB), undefined, { sensitivity: 'base' });
+        return sort_dir === 'asc' ? cmp : -cmp;
+      });
+
+      logs = logs.slice(0, Number(limit) || 200);
     } else {
       let q = `
         SELECT al.*, u.display_name as user_display_name, u.email as user_email, c.name as campus_name
@@ -2832,17 +2891,39 @@ router.get('/audit-logs', auth.requirePermission('audit.view'), async (req, res)
         p.push(action);
         q += ` AND al.action = $${p.length}`;
       }
+      if (entity_type) {
+        p.push(entity_type);
+        q += ` AND al.entity_type = $${p.length}`;
+      }
+      if (from_date) {
+        p.push(new Date(from_date));
+        q += ` AND al.created_at >= $${p.length}`;
+      }
+      if (to_date) {
+        p.push(new Date(new Date(to_date).getTime() + 86400000));
+        q += ` AND al.created_at <= $${p.length}`;
+      }
       if (search) {
         p.push(`%${search}%`);
-        q += ` AND al.description ILIKE $${p.length}`;
+        q += ` AND (al.description ILIKE $${p.length} OR al.action ILIKE $${p.length} OR u.display_name ILIKE $${p.length})`;
       }
 
-      q += ' ORDER BY al.created_at DESC LIMIT 100';
+      const validSortCols = {
+        created_at: 'al.created_at',
+        action: 'al.action',
+        user_display_name: 'u.display_name',
+        campus_name: 'c.name',
+        entity_type: 'al.entity_type'
+      };
+      const sortColumn = validSortCols[sort_by] || 'al.created_at';
+      const orderDirection = sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+      p.push(Number(limit) || 200);
+      q += ` ORDER BY ${sortColumn} ${orderDirection} LIMIT $${p.length}`;
       const result = await db.query(q, p);
       logs = result.rows;
     }
 
-    logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     res.json(logs);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -331,23 +331,92 @@ async function publishTask(taskId, publishingUserId, reqIp = null) {
 
 /**
  * Calculate next generation timestamp from recurrence config
+ * Supports DAILY, WEEKLY (with weekdays array), BIWEEKLY, MONTHLY (with day of month or last day),
+ * QUARTERLY, YEARLY, and CUSTOM_DAYS.
+ * Also checks end conditions: 'NEVER', 'ON_DATE', 'AFTER_OCCURRENCES'.
  */
-function calculateNextOccurrence(config, fromDate = new Date()) {
-  const { frequency, interval = 1, weekdays = [1], dayOfMonth = 1, monthOfYear = 1 } = config;
+function calculateNextOccurrence(config = {}, fromDate = new Date()) {
+  const {
+    frequency = 'MONTHLY',
+    interval = 1,
+    weekdays = [],
+    dayOfMonth = 1,
+    monthOfYear = 1,
+    end_type = 'NEVER',
+    end_date = null,
+    max_occurrences = null,
+    occurrences_generated = 0
+  } = config;
+
+  // Check occurrence cap
+  if (end_type === 'AFTER_OCCURRENCES' && max_occurrences && occurrences_generated >= Number(max_occurrences)) {
+    return null;
+  }
+
   const next = new Date(fromDate.getTime());
+  const stepInterval = Math.max(1, Number(interval) || 1);
 
   if (frequency === 'DAILY') {
-    next.setDate(next.getDate() + interval);
-  } else if (frequency === 'WEEKLY') {
-    next.setDate(next.getDate() + 7 * interval);
+    next.setDate(next.getDate() + stepInterval);
+  } else if (frequency === 'WEEKLY' || frequency === 'BIWEEKLY') {
+    const weekStep = frequency === 'BIWEEKLY' ? 2 : stepInterval;
+    if (Array.isArray(weekdays) && weekdays.length > 0) {
+      // Find the next upcoming weekday from the selected list
+      const sortedDays = weekdays.map(Number).sort((a, b) => a - b);
+      let found = false;
+      const curDay = fromDate.getDay();
+      for (const d of sortedDays) {
+        if (d > curDay) {
+          next.setDate(fromDate.getDate() + (d - curDay));
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // Wrap to the first weekday of next cycle
+        const firstDay = sortedDays[0];
+        const daysToAdd = (7 * weekStep) - curDay + firstDay;
+        next.setDate(fromDate.getDate() + daysToAdd);
+      }
+    } else {
+      next.setDate(next.getDate() + 7 * weekStep);
+    }
   } else if (frequency === 'MONTHLY') {
-    next.setMonth(next.getMonth() + interval);
-    next.setDate(Math.min(dayOfMonth, 28));
+    next.setMonth(next.getMonth() + stepInterval);
+    if (dayOfMonth === 'LAST') {
+      // Set to last day of next month
+      const y = next.getFullYear();
+      const m = next.getMonth();
+      const lastDay = new Date(y, m + 1, 0).getDate();
+      next.setDate(lastDay);
+    } else {
+      const targetDay = Math.min(Math.max(1, Number(dayOfMonth) || 1), 28);
+      next.setDate(targetDay);
+    }
+  } else if (frequency === 'QUARTERLY') {
+    next.setMonth(next.getMonth() + 3);
+    const targetDay = Math.min(Math.max(1, Number(dayOfMonth) || 1), 28);
+    next.setDate(targetDay);
   } else if (frequency === 'YEARLY') {
-    next.setFullYear(next.getFullYear() + interval);
-    next.setMonth(monthOfYear - 1);
-    next.setDate(Math.min(dayOfMonth, 28));
+    next.setFullYear(next.getFullYear() + stepInterval);
+    next.setMonth((Number(monthOfYear) || 1) - 1);
+    const targetDay = Math.min(Math.max(1, Number(dayOfMonth) || 1), 28);
+    next.setDate(targetDay);
+  } else if (frequency === 'CUSTOM_DAYS') {
+    next.setDate(next.getDate() + stepInterval);
+  } else {
+    // Default fallback monthly
+    next.setMonth(next.getMonth() + 1);
   }
+
+  // Check end date condition
+  if (end_type === 'ON_DATE' && end_date) {
+    const endDateObj = new Date(end_date);
+    if (next > endDateObj) {
+      return null;
+    }
+  }
+
   return next;
 }
 
@@ -388,9 +457,10 @@ async function processRecurringTasks() {
       const questions = typeof tmpl.questions === 'string' ? JSON.parse(tmpl.questions) : tmpl.questions;
       const audienceRules = typeof tmpl.audience_rules === 'string' ? JSON.parse(tmpl.audience_rules) : tmpl.audience_rules;
 
-      // 1. Create instance task
-      const instanceId = uuidv4();
+      const occurrencesGen = (config.occurrences_generated || 0) + 1;
+      config.occurrences_generated = occurrencesGen;
       const nextGenDate = calculateNextOccurrence(config, new Date(tmpl.next_generation_at || now));
+      const nextRecurrenceStatus = nextGenDate ? 'ACTIVE' : 'COMPLETED';
 
       if (db.isMemoryFallback()) {
         const store = db.getMemoryStore();
@@ -413,7 +483,9 @@ async function processRecurringTasks() {
           created_at: now,
           updated_at: now
         });
+        tmpl.recurrence_config = config;
         tmpl.next_generation_at = nextGenDate;
+        tmpl.recurrence_status = nextRecurrenceStatus;
         tmpl.updated_at = now;
       } else {
         await db.transaction(async (client) => {
@@ -423,8 +495,8 @@ async function processRecurringTasks() {
           `, [instanceId, tmpl.id, instanceTitle, tmpl.description, JSON.stringify(campusIds), JSON.stringify(questions), JSON.stringify(audienceRules), now, instanceDeadline, tmpl.created_by]);
 
           await client.query(`
-            UPDATE tasks SET next_generation_at = $1, updated_at = $2 WHERE id = $3
-          `, [nextGenDate, now, tmpl.id]);
+            UPDATE tasks SET recurrence_config = $1, next_generation_at = $2, recurrence_status = $3, updated_at = $4 WHERE id = $5
+          `, [JSON.stringify(config), nextGenDate, nextRecurrenceStatus, now, tmpl.id]);
         });
       }
 

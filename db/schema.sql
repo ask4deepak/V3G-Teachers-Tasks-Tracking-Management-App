@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status VARCHAR(50) NOT NULL DEFAULT 'DRAFT', -- 'DRAFT', 'PUBLISHED', 'ACTIVE', 'SCHEDULED', 'PAUSED', 'ARCHIVED', 'CLOSED'
     sort_order INT NOT NULL DEFAULT 0,
     allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_edit_submission BOOLEAN NOT NULL DEFAULT FALSE,
     open_at TIMESTAMPTZ,
     deadline_at TIMESTAMPTZ,
     published_at TIMESTAMPTZ,
