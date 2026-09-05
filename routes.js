@@ -3226,4 +3226,49 @@ router.get('/audit-logs', auth.requirePermission('audit.view'), async (req, res)
   }
 });
 
+// ============================================================================
+// 12. DIAGNOSTIC / SYSTEM EMAIL TEST ROUTE
+// ============================================================================
+
+router.post('/admin/test-email', auth.requireAuth, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && req.user.user_type !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Only Super Administrators can perform SMTP verification.' });
+    }
+
+    const targetEmail = req.body.to_email || req.user.email;
+    if (!targetEmail) {
+      return res.status(400).json({ error: 'Target email address is required.' });
+    }
+
+    const info = await services.sendTestEmail(targetEmail);
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: null,
+      action: 'TEST_EMAIL_SENT',
+      entityType: 'SYSTEM',
+      entityId: req.user.id,
+      description: `Dispatched SMTP test verification email to ${targetEmail}.`,
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: `Test email successfully sent to ${targetEmail}`,
+      details: {
+        messageId: info.messageId,
+        smtp_user: process.env.SMTP_USER || '(Not configured - mock used)',
+        smtp_host: process.env.SMTP_HOST || '(Not configured - mock used)'
+      }
+    });
+  } catch (err) {
+    console.error('[SMTP Test Error]:', err);
+    res.status(500).json({
+      error: `Failed to send test email: ${err.message}`,
+      hint: 'For Gmail/Google Workspace: Ensure 2-Step Verification is ON, use an App Password (not your normal password), and verify SMTP_USER matches your account.'
+    });
+  }
+});
+
 module.exports = router;

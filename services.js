@@ -517,27 +517,64 @@ let emailTransporter = null;
 
 function getEmailTransporter() {
   if (!emailTransporter) {
-    if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    const smtpHost = (process.env.SMTP_HOST || '').trim();
+    const smtpUser = (process.env.SMTP_USER || '').trim();
+    const smtpPass = (process.env.SMTP_PASS || '').trim().replace(/\s+/g, ''); // Strip spaces in Google App Passwords
+    const smtpPort = parseInt(process.env.SMTP_PORT || (smtpHost.includes('gmail') ? '465' : '587'), 10);
+    const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+
+    if (smtpHost && smtpUser && smtpPass) {
       emailTransporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || '587', 10),
-        secure: process.env.SMTP_PORT === '465',
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpSecure,
         auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS
+          user: smtpUser,
+          pass: smtpPass
+        },
+        tls: {
+          rejectUnauthorized: false
         }
       });
+      console.log(`[Email Service] Configured SMTP Transport for ${smtpUser} via ${smtpHost}:${smtpPort} (secure: ${smtpSecure})`);
     } else {
-      // Development mock transporter
+      // Mock transporter for development/unconfigured states
       emailTransporter = {
         sendMail: async (options) => {
-          console.log(`[Email Mock Sent] TO: ${options.to} | SUBJECT: ${options.subject}`);
+          console.log(`[Email Mock Dispatch] TO: ${options.to} | SUBJECT: ${options.subject}`);
           return { messageId: `mock-${Date.now()}` };
         }
       };
+      console.log(`[Email Service] SMTP credentials not set; using local console mock.`);
     }
   }
   return emailTransporter;
+}
+
+async function sendTestEmail(toEmail) {
+  const transporter = getEmailTransporter();
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
+  const timestamp = new Date().toLocaleString();
+
+  const info = await transporter.sendMail({
+    from,
+    to: toEmail,
+    subject: 'TaskTrack Pro: Gmail / Workspace SMTP Configuration Verified',
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #22c55e; border-radius: 8px;">
+        <h2 style="color: #16a34a; margin-top: 0;">🎉 SMTP Email Configuration Verified!</h2>
+        <p>Congratulations! Your Gmail / Google Workspace SMTP credentials have been verified and are working successfully.</p>
+        <div style="background: #f0fdf4; padding: 15px; border-left: 4px solid #16a34a; margin: 15px 0; border-radius: 4px;">
+          <p style="margin: 0 0 5px 0;"><strong>Sender (FROM):</strong> ${from}</p>
+          <p style="margin: 0 0 5px 0;"><strong>Recipient (TO):</strong> ${toEmail}</p>
+          <p style="margin: 0;"><strong>Verified At:</strong> ${timestamp}</p>
+        </div>
+        <p>Your institutional system is now fully configured to deliver instant task assignments, submission reminders, and faculty group notifications.</p>
+      </div>
+    `
+  });
+
+  return info;
 }
 
 async function sendTaskAssignedEmail(teacher, task, deadline) {
@@ -799,6 +836,7 @@ module.exports = {
   sendTaskReminderEmail,
   sendGroupJoinRequestEmail,
   sendGroupDecisionEmail,
+  sendTestEmail,
   logAudit,
   generateTaskResponseWorkbook,
   generateImportTemplate,

@@ -1208,7 +1208,12 @@ async function renderAdminDashboard(container) {
 
   container.innerHTML = `
     <!-- Top Action Toolbar -->
-    <div style="display:flex; justify-content:flex-end; gap:12px; margin-bottom: 24px;">
+    <div style="display:flex; justify-content:flex-end; gap:12px; margin-bottom: 24px; flex-wrap: wrap;">
+      ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN') ? `
+        <button class="btn btn-secondary" onclick="openTestEmailModal()">
+          <i class="fa-solid fa-paper-plane text-primary"></i> Test SMTP Email
+        </button>
+      ` : ''}
       ${hasPermission('tasks.create') ? `
         <button class="btn btn-primary" onclick="navigateTo('task-builder')">
           <i class="fa-solid fa-plus"></i> Create New Task
@@ -5033,5 +5038,70 @@ function formatStatus(status) {
     case 'PUBLISHED': return 'Published';
     case 'DRAFT': return 'Draft';
     default: return status;
+  }
+}
+
+// SMTP Test Email Modal for Super Admins
+function openTestEmailModal() {
+  showModal(`
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+      <h2><i class="fa-solid fa-envelope-circle-check text-primary"></i> Test SMTP Email Configuration</h2>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:16px;">
+        Send an instant verification email to test your Gmail / Google Workspace SMTP credentials.
+      </p>
+      <form onsubmit="handleSendTestEmail(event)">
+        <div class="form-group">
+          <label>Recipient Test Email Address <span class="text-danger">*</span></label>
+          <input type="email" name="to_email" class="form-input" value="${escapeHtml(state.user ? state.user.email : '')}" required placeholder="e.g. ask4deepak@gmail.com" />
+        </div>
+        <div id="test-email-result" style="margin-top:12px; display:none;"></div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
+          <button type="submit" id="btn-submit-test-email" class="btn btn-primary">
+            <i class="fa-solid fa-paper-plane"></i> Send Test Email
+          </button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+async function handleSendTestEmail(event) {
+  event.preventDefault();
+  const form = event.target;
+  const to_email = form.to_email.value.trim();
+  const btn = document.getElementById('btn-submit-test-email');
+  const resDiv = document.getElementById('test-email-result');
+
+  btn.disabled = true;
+  btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Sending...`;
+  resDiv.style.display = 'none';
+
+  try {
+    const res = await api('/admin/test-email', { method: 'POST', body: { to_email } });
+    resDiv.style.display = 'block';
+    resDiv.innerHTML = `
+      <div style="background:#f0fdf4; border:1px solid #86efac; color:#166534; padding:12px; border-radius:6px; font-size:0.9rem;">
+        <i class="fa-solid fa-circle-check"></i> <strong>Success!</strong> ${escapeHtml(res.message)}
+        <div style="font-size:0.8rem; margin-top:4px; color:#15803d;">SMTP User: ${escapeHtml(res.details ? res.details.smtp_user : '')}</div>
+      </div>
+    `;
+    btn.disabled = false;
+    btn.innerHTML = `<i class="fa-solid fa-paper-plane"></i> Send Another`;
+  } catch (err) {
+    resDiv.style.display = 'block';
+    resDiv.innerHTML = `
+      <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b; padding:12px; border-radius:6px; font-size:0.9rem;">
+        <i class="fa-solid fa-circle-exclamation"></i> <strong>SMTP Notice / Error:</strong> ${escapeHtml(err.message)}
+        <div style="font-size:0.8rem; margin-top:6px; color:#b91c1c;">
+          Ensure 2-Step Verification is active on your Google account and you have generated a 16-character App Password entered in Railway environment variables.
+        </div>
+      </div>
+    `;
+    btn.disabled = false;
+    btn.innerHTML = `<i class="fa-solid fa-paper-plane"></i> Retry`;
   }
 }
