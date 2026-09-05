@@ -578,14 +578,18 @@ async function initDb() {
         ('a3333333-3333-3333-3333-333333333333', 'admin.south@institution.edu', $1, 'ADMIN', 'EMP_AD02', 'Marcus', 'Sterling', 'Marcus Sterling', 'ACTIVE'),
         ('a4444444-4444-4444-4444-444444444444', 'teacher.sarah@institution.edu', $2, 'TEACHER', 'EMP_TC01', 'Sarah', 'Johnson', 'Sarah Johnson', 'ACTIVE'),
         ('a5555555-5555-5555-5555-555555555555', 'teacher.michael@institution.edu', $2, 'TEACHER', 'EMP_TC02', 'Michael', 'Chen', 'Michael Chen', 'ACTIVE')
-        ON CONFLICT (email) DO NOTHING;
+        ON CONFLICT (email) DO NOTHING
+      `, [hash, teacherHash]);
 
+      await pool.query(`
         INSERT INTO user_access (id, user_id, role_id, campus_id) VALUES
         ('91111111-1111-1111-1111-111111111111', 'a1111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', NULL),
         ('92222222-2222-2222-2222-222222222222', 'a2222222-2222-2222-2222-222222222222', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '11111111-1111-1111-1111-111111111111'),
         ('93333333-3333-3333-3333-333333333333', 'a3333333-3333-3333-3333-333333333333', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222')
-        ON CONFLICT (id) DO NOTHING;
+        ON CONFLICT (id) DO NOTHING
+      `);
 
+      await pool.query(`
         INSERT INTO user_attributes (id, user_id, campus_id, master_value_id) VALUES
         ('81111111-1111-1111-1111-111111111111', 'a4444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'd1111111-1111-1111-1111-111111111111'),
         ('82222222-2222-2222-2222-222222222222', 'a4444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'e2222222-2222-2222-2222-222222222222'),
@@ -593,8 +597,8 @@ async function initDb() {
         ('84444444-4444-4444-4444-444444444444', 'a5555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', 'd2222222-2222-2222-2222-222222222222'),
         ('85555555-5555-5555-5555-555555555555', 'a5555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', 'e1111111-1111-1111-1111-111111111111'),
         ('86666666-6666-6666-6666-666666666666', 'a5555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', 'f2222222-2222-2222-2222-222222222222')
-        ON CONFLICT (id) DO NOTHING;
-      `, [hash, teacherHash]);
+        ON CONFLICT (id) DO NOTHING
+      `);
 
       return;
     } catch (err) {
