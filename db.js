@@ -34,7 +34,7 @@ const memoryStore = {
 
 // Seed In-Memory Database
 async function seedMemoryStore() {
-  const hash = await bcrypt.hash('Admin@123', 10);
+  const hash = await bcrypt.hash('123456', 10);
 
   // Campuses (Clean start - can be added via UI/Bulk)
   memoryStore.campuses = [];

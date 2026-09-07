@@ -140,15 +140,108 @@ function renderAuthenticatedApp() {
   elements.navUserRole.textContent = state.user.roles[0] || state.user.user_type;
   elements.navUserAvatar.textContent = (state.user.first_name || 'U').charAt(0).toUpperCase();
 
-  // Set Campus Badge
-  const campusNames = state.user.campuses && state.user.campuses.length > 0 
-    ? state.user.campuses.map(c => c.name).join(', ') 
-    : 'All Campuses';
-  elements.pageCampusScope.textContent = campusNames;
+  // Set Operational Date in Topbar
+  const topbarDate = document.getElementById('topbar-current-date');
+  if (topbarDate) {
+    const today = new Date();
+    const dd = String(today.getDate()).padStart(2, '0');
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const yyyy = today.getFullYear();
+    topbarDate.textContent = `${dd}/${mm}/${yyyy}`;
+  }
+
+  // Setup Clean Active Campus Dropdown Widget
+  setupActiveCampusWidget();
 
   buildSidebarNav();
   navigateTo(state.user.user_type === 'TEACHER' ? 'teacher-dashboard' : 'admin-dashboard');
   fetchPendingGroupRequestsCount();
+}
+
+function setupActiveCampusWidget() {
+  const triggerBtn = document.getElementById('btn-campus-dropdown');
+  const dropdownMenu = document.getElementById('campus-dropdown-menu');
+  const userCampuses = state.user ? (state.user.campuses || []) : [];
+
+  if (!state.selectedCampusId) {
+    state.selectedCampusId = 'ALL';
+  }
+
+  updateCampusWidgetLabel();
+
+  if (!triggerBtn || !dropdownMenu) return;
+
+  if (userCampuses.length <= 1 && state.user.user_type !== 'SUPER_ADMIN' && !state.user.isSuperAdmin) {
+    triggerBtn.style.cursor = 'default';
+    const chevron = triggerBtn.querySelector('.campus-chevron');
+    if (chevron) chevron.style.display = 'none';
+    dropdownMenu.innerHTML = '';
+    return;
+  }
+
+  let menuHtml = `
+    <button type="button" class="campus-dropdown-item ${state.selectedCampusId === 'ALL' ? 'active' : ''}" data-campus-id="ALL">
+      <span>All Campuses (${userCampuses.length || 'Global'})</span>
+      ${state.selectedCampusId === 'ALL' ? '<i class="fa-solid fa-check check-icon"></i>' : ''}
+    </button>
+  `;
+
+  userCampuses.forEach(c => {
+    menuHtml += `
+      <button type="button" class="campus-dropdown-item ${state.selectedCampusId === c.id ? 'active' : ''}" data-campus-id="${c.id}">
+        <span>${escapeHtml(c.name)}</span>
+        ${state.selectedCampusId === c.id ? '<i class="fa-solid fa-check check-icon"></i>' : ''}
+      </button>
+    `;
+  });
+
+  dropdownMenu.innerHTML = menuHtml;
+
+  triggerBtn.onclick = (e) => {
+    e.stopPropagation();
+    const isHidden = dropdownMenu.classList.contains('hidden');
+    dropdownMenu.classList.toggle('hidden', !isHidden);
+    triggerBtn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+  };
+
+  dropdownMenu.querySelectorAll('.campus-dropdown-item').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const campusId = btn.getAttribute('data-campus-id');
+      state.selectedCampusId = campusId;
+      dropdownMenu.classList.add('hidden');
+      triggerBtn.setAttribute('aria-expanded', 'false');
+      setupActiveCampusWidget();
+      showToast(campusId === 'ALL' ? 'Viewing all campuses' : `Campus filter applied`, 'info');
+      loadCurrentView();
+    };
+  });
+
+  document.addEventListener('click', () => {
+    if (!dropdownMenu.classList.contains('hidden')) {
+      dropdownMenu.classList.add('hidden');
+      triggerBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+
+function updateCampusWidgetLabel() {
+  const campusScopeSpan = document.getElementById('page-campus-scope');
+  if (!campusScopeSpan) return;
+
+  const userCampuses = state.user ? (state.user.campuses || []) : [];
+  if (state.selectedCampusId === 'ALL' || !state.selectedCampusId) {
+    if (userCampuses.length === 1) {
+      campusScopeSpan.textContent = userCampuses[0].name;
+    } else if (userCampuses.length > 1) {
+      campusScopeSpan.textContent = `All Campuses (${userCampuses.length})`;
+    } else {
+      campusScopeSpan.textContent = 'All Campuses';
+    }
+  } else {
+    const found = userCampuses.find(c => c.id === state.selectedCampusId);
+    campusScopeSpan.textContent = found ? found.name : 'Active Campus';
+  }
 }
 
 function demoLogin(email, password) {
@@ -295,6 +388,12 @@ function loadCurrentView() {
   });
 }
 
+function setPageTitle(title) {
+  if (elements.pageTitle) {
+    elements.pageTitle.textContent = title;
+  }
+}
+
 async function renderCurrentView() {
   const route = state.currentRoute;
   const container = elements.mainContent;
@@ -302,89 +401,89 @@ async function renderCurrentView() {
   switch (route) {
     // Teacher Views
     case 'teacher-dashboard':
-      elements.pageTitle.textContent = 'Teacher Dashboard';
+      setPageTitle('Teacher Dashboard');
       await renderTeacherDashboard(container);
       break;
     case 'teacher-tasks':
-      elements.pageTitle.textContent = 'My Assigned Tasks';
+      setPageTitle('My Assigned Tasks');
       await renderTeacherTasks(container);
       break;
     case 'teacher-history':
-      elements.pageTitle.textContent = 'Submission History';
+      setPageTitle('Submission History');
       await renderTeacherHistory(container);
       break;
     case 'teacher-performance':
-      elements.pageTitle.textContent = 'My Performance';
+      setPageTitle('My Performance');
       await renderTeacherPerformance(container);
       break;
     case 'teacher-groups':
-      elements.pageTitle.textContent = 'Faculty Groups';
+      setPageTitle('Faculty Groups');
       await renderTeacherGroups(container);
       break;
     case 'my-profile':
-      elements.pageTitle.textContent = 'My Profile';
+      setPageTitle('My Profile');
       await renderMyProfile(container);
       break;
 
     // Admin Views
     case 'admin-dashboard':
-      elements.pageTitle.textContent = 'Institutional Dashboard';
+      setPageTitle('Institutional Dashboard');
       await renderAdminDashboard(container);
       break;
     case 'tasks':
-      elements.pageTitle.textContent = 'Task Management';
+      setPageTitle('Task Management');
       await renderAdminTasks(container);
       break;
     case 'task-builder':
-      elements.pageTitle.textContent = 'Guided Task Builder';
+      setPageTitle('Guided Task Builder');
       await renderTaskBuilder(container);
       break;
     case 'recurring-tasks':
-      elements.pageTitle.textContent = 'Recurring Task Templates';
+      setPageTitle('Recurring Task Templates');
       await renderRecurringTasks(container);
       break;
     case 'reports-task-wise':
-      elements.pageTitle.textContent = 'Task-Wise Reports';
+      setPageTitle('Task-Wise Reports');
       await renderTaskWiseReport(container);
       break;
     case 'reports-teacher-wise':
-      elements.pageTitle.textContent = 'Teacher Performance Report';
+      setPageTitle('Teacher Performance Report');
       await renderTeacherWiseReport(container);
       break;
     case 'reports-detailed':
-      elements.pageTitle.textContent = 'Detailed Response Report';
+      setPageTitle('Detailed Response Report');
       await renderDetailedResponseReport(container);
       break;
     case 'users':
-      elements.pageTitle.textContent = 'Faculty & User Directory';
+      setPageTitle('Faculty & User Directory');
       await renderUsersDirectory(container);
       break;
     case 'groups':
-      elements.pageTitle.textContent = 'Group Management';
+      setPageTitle('Group Management');
       await renderAdminGroups(container);
       break;
     case 'group-requests':
-      elements.pageTitle.textContent = 'Group Joining Requests';
+      setPageTitle('Group Joining Requests');
       await renderGroupRequests(container);
       break;
     case 'masters':
-      elements.pageTitle.textContent = 'Master Data Management';
+      setPageTitle('Master Data Management');
       await renderMasterData(container);
       break;
     case 'campuses':
-      elements.pageTitle.textContent = 'Campus Management';
+      setPageTitle('Campus Management');
       await renderCampusesView(container);
       break;
     case 'import-export':
-      elements.pageTitle.textContent = 'Import & Export Centre';
+      setPageTitle('Import & Export Centre');
       await renderImportExport(container);
       break;
     case 'audit-logs':
-      elements.pageTitle.textContent = 'Audit Log Timeline';
+      setPageTitle('Audit Log Timeline');
       await renderAuditLogs(container);
       break;
     case 'roles':
-      elements.pageTitle.textContent = 'Roles & Permissions';
+      setPageTitle('Roles & Permissions');
       await renderRolesManagement(container);
       break;
 
@@ -403,92 +502,133 @@ async function renderTeacherDashboard(container) {
     api('/teacher/performance')
   ]);
 
-  const dueSoon = tasks.filter(t => t.status === 'NOT_STARTED' || t.status === 'IN_PROGRESS').slice(0, 3);
+  const dueSoon = tasks.filter(t => t.status === 'NOT_STARTED' || t.status === 'IN_PROGRESS');
   const overdue = tasks.filter(t => t.status === 'OVERDUE');
+  const completed = tasks.filter(t => t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE');
+  const firstName = (state.user ? state.user.first_name : '') || 'Teacher';
+  const todayDateString = new Date().toISOString().split('T')[0];
 
   container.innerHTML = `
-    <!-- Performance Summary Cards -->
-    <div class="kpi-grid">
-      <div class="kpi-card" onclick="navigateTo('teacher-tasks')">
-        <div class="kpi-icon blue"><i class="fa-solid fa-list-check"></i></div>
-        <div>
-          <div class="kpi-value">${perf.total_assigned}</div>
-          <div class="kpi-label">Total Assigned</div>
-        </div>
+    <!-- Teacher Control Room Header -->
+    <div class="dashboard-hero-header">
+      <div>
+        <span class="section-kicker">TEACHER WORKSPACE</span>
+        <h1 class="hero-title">Good morning, ${escapeHtml(firstName)}</h1>
       </div>
-      <div class="kpi-card" onclick="navigateTo('teacher-tasks')">
-        <div class="kpi-icon green"><i class="fa-solid fa-circle-check"></i></div>
-        <div>
-          <div class="kpi-value">${perf.submitted_on_time}</div>
-          <div class="kpi-label">Submitted On Time</div>
-        </div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('teacher-tasks')">
-        <div class="kpi-icon yellow"><i class="fa-solid fa-clock"></i></div>
-        <div>
-          <div class="kpi-value">${perf.submitted_late}</div>
-          <div class="kpi-label">Submitted Late</div>
-        </div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('teacher-tasks')">
-        <div class="kpi-icon red"><i class="fa-solid fa-triangle-exclamation"></i></div>
-        <div>
-          <div class="kpi-value">${perf.overdue}</div>
-          <div class="kpi-label">Overdue</div>
-        </div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('teacher-performance')">
-        <div class="kpi-icon purple"><i class="fa-solid fa-percent"></i></div>
-        <div>
-          <div class="kpi-value">${perf.completion_rate}%</div>
-          <div class="kpi-label">Completion Rate</div>
-        </div>
+      <div class="hero-actions-right">
+        <button class="btn btn-accent btn-sm" onclick="navigateTo('teacher-tasks')">
+          <i class="fa-solid fa-list-check"></i> My Assigned Tasks
+        </button>
       </div>
     </div>
 
-    <!-- Due Soon / Pending Section -->
-    <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-fire text-warning"></i> Tasks Due Soon & Action Items</h2>
-        <button class="btn btn-secondary btn-sm" onclick="navigateTo('teacher-tasks')">View All Tasks</button>
+    <!-- Live Operational View Banner -->
+    <div class="live-banner">
+      <div class="live-banner-left">
+        <span class="live-dot-pulse"></span>
+        <div>
+          <div class="live-banner-title">Live task tracking view</div>
+          <div class="live-banner-sub">Focus on pending items and strict deadlines.</div>
+        </div>
       </div>
-      <div class="card-body">
-        ${dueSoon.length === 0 ? `
-          <div class="empty-state">
-            <i class="fa-solid fa-circle-check text-success"></i>
-            <h3>You are all caught up!</h3>
-            <p>No pending tasks currently require your attention.</p>
-          </div>
-        ` : `
-          <div class="table-responsive">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Task Title</th>
-                  <th>Assigned Date</th>
-                  <th>Deadline</th>
-                  <th>Status</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${dueSoon.map(t => `
-                  <tr>
-                    <td><strong>${escapeHtml(t.title)}</strong></td>
-                    <td>${formatDate(t.assigned_at)}</td>
-                    <td><strong class="text-danger">${formatDateTime(t.due_at)}</strong></td>
-                    <td><span class="badge badge-${t.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(t.status)}</span></td>
-                    <td>
-                      <button class="btn btn-primary btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
-                        <i class="fa-solid fa-pen-to-square"></i> Fill Response
-                      </button>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        `}
+      <div class="live-banner-date hide-sm">${todayDateString}</div>
+    </div>
+
+    <!-- RouteReady Metric KPI Grid -->
+    <div class="kpi-grid">
+      <div class="kpi-card" onclick="navigateTo('teacher-tasks')">
+        <div class="kpi-title">Assigned workflows</div>
+        <div class="kpi-value">${perf.total_assigned}</div>
+        <div class="kpi-subtext">Total active assignments</div>
+      </div>
+      <div class="kpi-card" onclick="navigateTo('teacher-tasks')">
+        <div class="kpi-title">Completed on time</div>
+        <div class="kpi-value">${perf.submitted_on_time}</div>
+        <div class="kpi-subtext">${perf.completion_rate}% completion rate</div>
+      </div>
+      <div class="kpi-card ${perf.overdue > 0 ? 'kpi-card-highlight' : ''}" onclick="navigateTo('teacher-tasks')">
+        <div class="kpi-title">Overdue / Action items</div>
+        <div class="kpi-value">${perf.overdue}</div>
+        <div class="kpi-subtext">${perf.overdue > 0 ? 'Immediate action required' : 'Zero overdue tasks'}</div>
+      </div>
+      <div class="kpi-card" onclick="navigateTo('teacher-performance')">
+        <div class="kpi-title">Punctuality rate</div>
+        <div class="kpi-value">${perf.on_time_rate || 100}%</div>
+        <div class="kpi-subtext">On-time submission reliability</div>
+      </div>
+    </div>
+
+    <!-- Dual Workspace Columns -->
+    <div class="grid-split-2">
+      <!-- Left Column: Tasks Due Soon & Action Items -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Pending task action items</h2>
+          <a href="javascript:void(0)" class="card-header-link" onclick="navigateTo('teacher-tasks')">Open workspace →</a>
+        </div>
+        <div class="card-body">
+          ${dueSoon.length === 0 ? `
+            <div class="empty-state">
+              <i class="fa-solid fa-circle-check text-success"></i>
+              <h3>You are all caught up!</h3>
+              <p>No pending tasks currently require your attention.</p>
+            </div>
+          ` : `
+            <div class="list-card-stack">
+              ${dueSoon.slice(0, 6).map(t => {
+                const isOverdue = t.status === 'OVERDUE';
+                return `
+                  <div class="list-card-item" onclick="openTaskSubmissionModal('${t.task_id}')" style="cursor:pointer;">
+                    <div class="list-card-left">
+                      <div class="list-card-icon orange"><i class="fa-regular fa-sun"></i></div>
+                      <div class="list-card-meta">
+                        <div class="list-card-title">${escapeHtml(t.title)}</div>
+                        <div class="list-card-sub">Due: ${formatDateTime(t.due_at)}</div>
+                      </div>
+                    </div>
+                    <div>
+                      <span class="badge ${isOverdue ? 'badge-overdue' : 'badge-pending'}">${isOverdue ? 'OVERDUE' : 'PENDING'}</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+
+      <!-- Right Column: Recent Submissions -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Recent submissions</h2>
+          <a href="javascript:void(0)" class="card-header-link" onclick="navigateTo('teacher-history')">View history →</a>
+        </div>
+        <div class="card-body">
+          ${completed.length === 0 ? `
+            <div class="empty-state">
+              <i class="fa-solid fa-clock-rotate-left"></i>
+              <h3>No submissions yet</h3>
+              <p>Completed tasks will be archived here.</p>
+            </div>
+          ` : `
+            <div class="list-card-stack">
+              ${completed.slice(0, 6).map(t => `
+                <div class="list-card-item" onclick="openTaskSubmissionModal('${t.task_id}')" style="cursor:pointer;">
+                  <div class="list-card-left">
+                    <div class="list-card-icon green"><i class="fa-solid fa-circle-check"></i></div>
+                    <div class="list-card-meta">
+                      <div class="list-card-title">${escapeHtml(t.title)}</div>
+                      <div class="list-card-sub">Submitted: ${formatDate(t.submitted_at || t.assigned_at)}</div>
+                    </div>
+                  </div>
+                  <div>
+                    <span class="badge badge-completed">SUBMITTED</span>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
       </div>
     </div>
   `;
@@ -1113,29 +1253,32 @@ async function renderMyProfile(container) {
       </div>
     </div>
 
-    <!-- Self-Service Password Reset Card -->
+    <!-- Self-Service Institutional PIN (IPIN) Management Card -->
     <div class="card" style="max-width: 800px; margin: 24px auto 0;">
       <div class="card-header">
-        <h2><i class="fa-solid fa-key text-primary"></i> Change Account Password</h2>
+        <h2><i class="fa-solid fa-key text-primary"></i> Change Institutional PIN (IPIN)</h2>
       </div>
       <div class="card-body">
+        <p style="color:var(--text-muted); font-size:0.88rem; margin-bottom:16px;">
+          Your Institutional PIN (IPIN) is a 4 to 6 digit numeric security code used for quick, secure mobile and desktop access.
+        </p>
         <form id="form-change-password" onsubmit="handlePasswordReset(event)">
           <div class="form-group">
-            <label>Current Password <span class="text-danger">*</span></label>
-            <input type="password" name="current_password" class="form-input" required placeholder="Enter current password" />
+            <label>Current IPIN <span class="text-danger">*</span></label>
+            <input type="password" name="current_password" class="form-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" required placeholder="Enter current IPIN" />
           </div>
           <div class="form-group">
-            <label>New Password <span class="text-danger">*</span></label>
-            <input type="password" name="new_password" class="form-input" required minlength="6" placeholder="Enter new password (min 6 characters)" />
+            <label>New 4-6 Digit IPIN <span class="text-danger">*</span></label>
+            <input type="password" name="new_password" class="form-input" inputmode="numeric" pattern="[0-9]*" minlength="4" maxlength="8" required placeholder="e.g. 123456" />
           </div>
           <div class="form-group">
-            <label>Confirm New Password <span class="text-danger">*</span></label>
-            <input type="password" name="confirm_password" class="form-input" required minlength="6" placeholder="Confirm new password" />
+            <label>Confirm New IPIN <span class="text-danger">*</span></label>
+            <input type="password" name="confirm_password" class="form-input" inputmode="numeric" pattern="[0-9]*" minlength="4" maxlength="8" required placeholder="Confirm new 4-6 digit IPIN" />
           </div>
 
           <div style="margin-top: 24px;">
             <button type="submit" class="btn btn-primary">
-              <i class="fa-solid fa-lock"></i> Update Password
+              <i class="fa-solid fa-shield-halved"></i> Update IPIN
             </button>
           </div>
         </form>
@@ -1178,7 +1321,11 @@ async function handlePasswordReset(event) {
   const confirm_password = formData.get('confirm_password');
 
   if (new_password !== confirm_password) {
-    return showToast('New passwords do not match', 'warning');
+    return showToast('New IPINs do not match', 'warning');
+  }
+
+  if (new_password.length < 4 || new_password.length > 8) {
+    return showToast('IPIN must be between 4 and 8 digits (recommended 4-6 digits)', 'warning');
   }
 
   try {
@@ -1186,7 +1333,7 @@ async function handlePasswordReset(event) {
       method: 'PUT',
       body: { current_password, new_password, confirm_password }
     });
-    showToast(res.message || 'Password updated successfully!', 'success');
+    showToast(res.message || 'Institutional PIN (IPIN) updated successfully!', 'success');
     form.reset();
   } catch {}
 }
@@ -1196,117 +1343,163 @@ async function handlePasswordReset(event) {
 // ============================================================================
 
 async function renderAdminDashboard(container) {
-  const [tasks, teachers, requests] = await Promise.all([
+  const [allTasks, allTeachers, requests] = await Promise.all([
     api('/tasks'),
     api('/users?user_type=TEACHER'),
     hasPermission('groups.approve_requests') ? api('/group-requests/pending-count') : Promise.resolve({ count: 0 })
   ]);
 
+  // Apply active campus filter if selected
+  const activeCampusId = state.selectedCampusId;
+  const tasks = (activeCampusId && activeCampusId !== 'ALL')
+    ? allTasks.filter(t => {
+        const cIds = typeof t.campus_ids === 'string' ? JSON.parse(t.campus_ids || '[]') : (t.campus_ids || []);
+        return cIds.includes(activeCampusId);
+      })
+    : allTasks;
+
+  const teachers = (activeCampusId && activeCampusId !== 'ALL')
+    ? allTeachers.filter(u => (u.campuses || []).some(c => c.id === activeCampusId))
+    : allTeachers;
+
   const activeTasks = tasks.filter(t => t.status === 'PUBLISHED');
   const totalOverdue = activeTasks.reduce((acc, t) => acc + (t.overdue || 0), 0);
   const totalAssigned = activeTasks.reduce((acc, t) => acc + (t.total_assigned || 0), 0);
+  const totalSubmitted = activeTasks.reduce((acc, t) => acc + (t.submitted_on_time || 0) + (t.submitted_late || 0), 0);
+  const firstName = (state.user ? state.user.first_name : '') || 'Administrator';
+  const todayDateString = new Date().toISOString().split('T')[0];
 
   container.innerHTML = `
-    <!-- Top Action Toolbar -->
-    <div style="display:flex; justify-content:flex-end; gap:12px; margin-bottom: 24px; flex-wrap: wrap;">
-      ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN') ? `
-        <button class="btn btn-secondary" onclick="openTestEmailModal()">
-          <i class="fa-solid fa-paper-plane text-primary"></i> Test SMTP Email
-        </button>
-      ` : ''}
-      ${hasPermission('tasks.create') ? `
-        <button class="btn btn-primary" onclick="navigateTo('task-builder')">
-          <i class="fa-solid fa-plus"></i> Create New Task
-        </button>
-      ` : ''}
+    <!-- Control Room Hero Header -->
+    <div class="dashboard-hero-header">
+      <div>
+        <span class="section-kicker">TODAY'S CONTROL ROOM</span>
+        <h1 class="hero-title">Good morning, ${escapeHtml(firstName)}</h1>
+      </div>
+      <div class="hero-actions-right">
+        <div class="date-filter-control hide-sm">
+          <input type="date" value="${todayDateString}" id="admin-dashboard-date-filter" />
+        </div>
+        ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN') ? `
+          <button class="btn btn-secondary btn-sm" onclick="openTestEmailModal()">
+            <i class="fa-solid fa-paper-plane"></i> <span class="hide-sm">Test SMTP</span>
+          </button>
+        ` : ''}
+        ${hasPermission('tasks.create') ? `
+          <button class="btn btn-accent btn-sm" onclick="navigateTo('task-builder')">
+            <i class="fa-solid fa-plus"></i> Create Task
+          </button>
+        ` : ''}
+      </div>
     </div>
 
-    <!-- Admin KPI Cards -->
+    <!-- Live Operational View Banner -->
+    <div class="live-banner">
+      <div class="live-banner-left">
+        <span class="live-dot-pulse"></span>
+        <div>
+          <div class="live-banner-title">Live operational view</div>
+          <div class="live-banner-sub">Focus on exceptions. Everything else stays quietly in order.</div>
+        </div>
+      </div>
+      <div class="live-banner-date hide-sm">${todayDateString}</div>
+    </div>
+
+    <!-- RouteReady Metric KPI Grid -->
     <div class="kpi-grid">
       <div class="kpi-card" onclick="navigateTo('tasks')">
-        <div class="kpi-icon blue"><i class="fa-solid fa-list-check"></i></div>
-        <div>
-          <div class="kpi-value">${activeTasks.length}</div>
-          <div class="kpi-label">Active Tasks</div>
-        </div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('reports-task-wise')">
-        <div class="kpi-icon red"><i class="fa-solid fa-triangle-exclamation"></i></div>
-        <div>
-          <div class="kpi-value">${totalOverdue}</div>
-          <div class="kpi-label">Overdue Responses</div>
-        </div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('group-requests')">
-        <div class="kpi-icon yellow"><i class="fa-solid fa-user-clock"></i></div>
-        <div>
-          <div class="kpi-value">${requests.count}</div>
-          <div class="kpi-label">Pending Group Requests</div>
-        </div>
+        <div class="kpi-title">Active task operations</div>
+        <div class="kpi-value">${activeTasks.length}/${tasks.length}</div>
+        <div class="kpi-subtext">Active institutional workflows</div>
       </div>
       <div class="kpi-card" onclick="navigateTo('users')">
-        <div class="kpi-icon green"><i class="fa-solid fa-chalkboard-user"></i></div>
-        <div>
-          <div class="kpi-value">${teachers.length}</div>
-          <div class="kpi-label">Active Teachers</div>
-        </div>
+        <div class="kpi-title">Faculty submissions</div>
+        <div class="kpi-value">${totalSubmitted}/${totalAssigned || 0}</div>
+        <div class="kpi-subtext">Across active teachers</div>
+      </div>
+      <div class="kpi-card ${totalOverdue > 0 ? 'kpi-card-highlight' : ''}" onclick="navigateTo('reports-task-wise')">
+        <div class="kpi-title">Overdue / Exceptions</div>
+        <div class="kpi-value">${totalOverdue}</div>
+        <div class="kpi-subtext">${totalOverdue > 0 ? 'Action items require follow-up' : 'Zero exceptions recorded'}</div>
+      </div>
+      <div class="kpi-card" onclick="navigateTo('group-requests')">
+        <div class="kpi-title">Pending group requests</div>
+        <div class="kpi-value">${requests.count}</div>
+        <div class="kpi-subtext">Faculty awaiting approval</div>
       </div>
     </div>
 
-    <!-- Published Tasks Overview -->
-    <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-chart-column"></i> Active Institutional Tasks Status</h2>
-        <button class="btn btn-secondary btn-sm" onclick="navigateTo('tasks')">View All</button>
-      </div>
-      <div class="card-body">
-        ${activeTasks.length === 0 ? `
-          <div class="empty-state">
-            <i class="fa-solid fa-list-check"></i>
-            <h3>No Active Tasks</h3>
-            <p>Create and publish a task to begin monitoring submissions.</p>
-          </div>
-        ` : `
-          <div class="table-responsive">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Task Title</th>
-                  <th>Assigned</th>
-                  <th>On Time</th>
-                  <th>Late</th>
-                  <th>Overdue</th>
-                  <th>Completion %</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${activeTasks.map(t => `
-                  <tr>
-                    <td><strong>${escapeHtml(t.title)}</strong></td>
-                    <td><span class="badge badge-in-progress">${t.total_assigned} Teachers</span></td>
-                    <td><span class="badge badge-submitted-on-time">${t.submitted_on_time}</span></td>
-                    <td><span class="badge badge-submitted-late">${t.submitted_late}</span></td>
-                    <td><span class="badge badge-overdue">${t.overdue}</span></td>
-                    <td>
-                      <div style="display:flex; align-items:center; gap:8px;">
-                        <div style="flex:1; height:8px; background:var(--border-color); border-radius:4px; overflow:hidden;">
-                          <div style="height:100%; width:${t.completion_rate}%; background:var(--primary);"></div>
-                        </div>
-                        <span style="font-weight:600; font-size:0.8rem;">${t.completion_rate}%</span>
+    <!-- Dual Workspace Columns (matching screenshot layout) -->
+    <div class="grid-split-2">
+      <!-- Left Column: Active Institutional Tasks -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Task operations</h2>
+          <a href="javascript:void(0)" class="card-header-link" onclick="navigateTo('tasks')">Open workspace →</a>
+        </div>
+        <div class="card-body">
+          ${activeTasks.length === 0 ? `
+            <div class="empty-state">
+              <i class="fa-solid fa-circle-check text-success"></i>
+              <h3>All tasks completed</h3>
+              <p>No published tasks currently active.</p>
+            </div>
+          ` : `
+            <div class="list-card-stack">
+              ${activeTasks.slice(0, 6).map(t => {
+                const isOverdue = (t.overdue || 0) > 0;
+                return `
+                  <div class="list-card-item" onclick="openTaskReport('${t.id}')" style="cursor:pointer;">
+                    <div class="list-card-left">
+                      <div class="list-card-icon orange"><i class="fa-regular fa-sun"></i></div>
+                      <div class="list-card-meta">
+                        <div class="list-card-title">${escapeHtml(t.title)}</div>
+                        <div class="list-card-sub">${t.total_assigned ? `${(t.submitted_on_time || 0) + (t.submitted_late || 0)}/${t.total_assigned} submitted` : 'Pending audience'}</div>
                       </div>
-                    </td>
-                    <td>
-                      <button class="btn btn-secondary btn-sm" onclick="openTaskReport('${t.id}')">
-                        <i class="fa-solid fa-chart-pie"></i> Report
-                      </button>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        `}
+                    </div>
+                    <div>
+                      <span class="badge ${isOverdue ? 'badge-pending' : 'badge-completed'}">${isOverdue ? 'PENDING' : 'ON TRACK'}</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+
+      <!-- Right Column: Institutional Directory & Workflows -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Active faculty</h2>
+          <a href="javascript:void(0)" class="card-header-link" onclick="navigateTo('users')">Open directory →</a>
+        </div>
+        <div class="card-body">
+          ${teachers.length === 0 ? `
+            <div class="empty-state">
+              <i class="fa-solid fa-users"></i>
+              <h3>No teachers found</h3>
+              <p>No faculty members listed in the directory.</p>
+            </div>
+          ` : `
+            <div class="list-card-stack">
+              ${teachers.slice(0, 6).map(u => `
+                <div class="list-card-item">
+                  <div class="list-card-left">
+                    <div class="list-card-icon green"><i class="fa-solid fa-chalkboard-user"></i></div>
+                    <div class="list-card-meta">
+                      <div class="list-card-title">${escapeHtml(u.display_name)}</div>
+                      <div class="list-card-sub">${escapeHtml(u.designation_name || u.email)}</div>
+                    </div>
+                  </div>
+                  <div>
+                    <span class="badge badge-waiting">ACTIVE</span>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
       </div>
     </div>
   `;

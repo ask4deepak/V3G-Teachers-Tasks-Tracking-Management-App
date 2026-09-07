@@ -39,24 +39,24 @@
       <form id="form-login" class="login-form">
         <div class="form-group">
           <label for="login-email"><i class="fa-regular fa-envelope"></i> Institutional Email</label>
-          <input type="email" id="login-email" class="form-input" placeholder="e.g. sarah.johnson@institution.edu" required />
+          <input type="email" id="login-email" class="form-input" placeholder="e.g. ask4deepak@gmail.com" required />
         </div>
 
         <div class="form-group">
-          <label for="login-password"><i class="fa-solid fa-lock"></i> Password</label>
-          <input type="password" id="login-password" class="form-input" placeholder="••••••••" required />
+          <label for="login-password"><i class="fa-solid fa-key"></i> Institutional PIN (IPIN)</label>
+          <input type="password" id="login-password" class="form-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="4-6 digit numeric PIN (e.g. 123456)" required />
         </div>
 
         <button type="submit" id="btn-login" class="btn btn-primary btn-block">
-          <span>Sign In</span> <i class="fa-solid fa-arrow-right"></i>
+          <span>Sign In with IPIN</span> <i class="fa-solid fa-arrow-right"></i>
         </button>
       </form>
 
       <div class="demo-logins">
         <div class="demo-title">Super-Admin Access:</div>
         <div class="demo-btn-grid">
-          <button type="button" class="btn btn-demo" onclick="demoLogin('ask4deepak@gmail.com', 'Admin@123')">
-            <i class="fa-solid fa-shield-halved"></i> Super Admin (Deepak Gupta)
+          <button type="button" class="btn btn-demo" onclick="demoLogin('ask4deepak@gmail.com', '123456')">
+            <i class="fa-solid fa-shield-halved"></i> Super Admin (Deepak Gupta) • IPIN: 123456
           </button>
         </div>
       </div>
@@ -72,9 +72,12 @@
     <!-- Sidebar Navigation -->
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-header">
-        <div class="logo">
-          <i class="fa-solid fa-graduation-cap"></i>
-          <span>TaskTrack</span>
+        <div class="brand-box">
+          <div class="brand-logo-sq">TT</div>
+          <div class="brand-text">
+            <span class="brand-name">TaskTrack</span>
+            <span class="brand-sub">Teacher operations</span>
+          </div>
         </div>
         <button id="btn-close-sidebar" class="btn-icon mobile-only" aria-label="Close Navigation">
           <i class="fa-solid fa-xmark"></i>
@@ -82,10 +85,10 @@
       </div>
 
       <div class="user-profile-badge">
-        <div class="user-avatar" id="nav-user-avatar">U</div>
+        <div class="user-avatar" id="nav-user-avatar">DG</div>
         <div class="user-meta">
-          <div class="user-name" id="nav-user-name">User Name</div>
-          <div class="user-role-tag" id="nav-user-role">Role</div>
+          <div class="user-name" id="nav-user-name">Deepak Gupta</div>
+          <div class="user-role-tag" id="nav-user-role">Super Administrator</div>
         </div>
       </div>
 
@@ -108,17 +111,37 @@
           <button id="btn-toggle-sidebar" class="btn-icon mobile-only" aria-label="Toggle Sidebar">
             <i class="fa-solid fa-bars"></i>
           </button>
-          <div class="page-header-info">
-            <h1 id="page-title" class="page-title">Dashboard</h1>
-            <span id="page-campus-scope" class="campus-badge">North Campus</span>
+          
+          <!-- Hidden Page Title for Accessibility & Screen Readers -->
+          <span id="page-title" class="hidden">Dashboard</span>
+
+          <!-- Modern Active Campus Selector Widget -->
+          <div class="campus-selector-widget" id="campus-selector-widget">
+            <span class="campus-label">Active campus</span>
+            <div class="campus-select-wrapper">
+              <button type="button" class="campus-dropdown-trigger" id="btn-campus-dropdown" aria-haspopup="listbox" aria-expanded="false">
+                <span id="page-campus-scope" class="campus-name-current">All Campuses</span>
+                <i class="fa-solid fa-chevron-down campus-chevron"></i>
+              </button>
+              <div id="campus-dropdown-menu" class="campus-dropdown-menu hidden" role="listbox">
+                <!-- Injected via JavaScript -->
+              </div>
+            </div>
           </div>
         </div>
 
         <div class="topbar-right">
+          <!-- Operational Date Indicator -->
+          <div class="operational-date-badge hide-sm" id="operational-date-display">
+            <span class="date-label">Operational date</span>
+            <span class="date-value" id="topbar-current-date">--/--/----</span>
+          </div>
+
           <!-- Refresh Action on Every Main Screen -->
-          <button id="btn-refresh" class="btn btn-secondary btn-sm" title="Refresh Screen Data">
-            <i class="fa-solid fa-rotate"></i> <span class="hide-sm">Refresh</span>
+          <button id="btn-refresh" class="btn btn-refresh" title="Refresh Screen Data">
+            <i class="fa-solid fa-rotate"></i> <span>Refresh</span>
           </button>
+
           <div class="theme-toggle" id="theme-toggle" title="Toggle Dark/Light Mode">
             <i class="fa-solid fa-moon"></i>
           </div>

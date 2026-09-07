@@ -34,18 +34,21 @@ async function runAllTests() {
 
   console.log('--- Phase 1: Authentication & Super-Admin Credentials ---');
 
-  await test('Super Admin (ask4deepak@gmail.com) can authenticate with Admin@123', async () => {
-    const user = await auth.authenticate('ask4deepak@gmail.com', 'Admin@123');
+  await test('Super Admin (ask4deepak@gmail.com) can authenticate with IPIN 123456 or Admin@123', async () => {
+    const user = await auth.authenticate('ask4deepak@gmail.com', '123456');
     assert.strictEqual(user.email, 'ask4deepak@gmail.com');
     assert.strictEqual(user.display_name, 'Deepak Gupta');
     assert.strictEqual(user.user_type, 'SUPER_ADMIN');
     assert.strictEqual(user.isSuperAdmin, true);
+
+    const legacyUser = await auth.authenticate('ask4deepak@gmail.com', 'Admin@123');
+    assert.strictEqual(legacyUser.email, 'ask4deepak@gmail.com');
   });
 
-  await test('Authentication fails on invalid password', async () => {
+  await test('Authentication fails on invalid IPIN', async () => {
     await assert.rejects(
-      async () => await auth.authenticate('ask4deepak@gmail.com', 'WrongPass!'),
-      /Invalid email or password/
+      async () => await auth.authenticate('ask4deepak@gmail.com', '999999'),
+      /Invalid email or Institutional PIN/
     );
   });
 
