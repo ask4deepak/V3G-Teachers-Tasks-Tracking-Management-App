@@ -692,26 +692,67 @@ async function dispatchMail(mailOptions) {
 }
 
 async function sendTestEmail(toEmail) {
-  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
+  const smtpHost = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+  let smtpUser = (process.env.SMTP_USER || '').trim();
+  let smtpPass = (process.env.SMTP_PASS || '').trim();
+
+  if ((smtpUser.startsWith('"') && smtpUser.endsWith('"')) || (smtpUser.startsWith("'") && smtpUser.endsWith("'"))) {
+    smtpUser = smtpUser.substring(1, smtpUser.length - 1).trim();
+  }
+  if ((smtpPass.startsWith('"') && smtpPass.endsWith('"')) || (smtpPass.startsWith("'") && smtpPass.endsWith("'"))) {
+    smtpPass = smtpPass.substring(1, smtpPass.length - 1).trim();
+  }
+  smtpPass = smtpPass.replace(/\s+/g, '');
+
+  if (!smtpUser || !smtpPass) {
+    return { isMock: true };
+  }
+
+  const from = process.env.EMAIL_FROM || smtpUser || 'tasks@institution.edu';
   const timestamp = new Date().toLocaleString();
 
-  return dispatchMail({
-    from,
-    to: toEmail,
-    subject: 'TaskTrack Pro: Gmail / Workspace SMTP Configuration Verified',
-    html: `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #22c55e; border-radius: 8px;">
-        <h2 style="color: #16a34a; margin-top: 0;">🎉 SMTP Email Configuration Verified!</h2>
-        <p>Congratulations! Your Gmail / Google Workspace SMTP credentials have been verified and are working successfully.</p>
-        <div style="background: #f0fdf4; padding: 15px; border-left: 4px solid #16a34a; margin: 15px 0; border-radius: 4px;">
-          <p style="margin: 0 0 5px 0;"><strong>Sender (FROM):</strong> ${from}</p>
-          <p style="margin: 0 0 5px 0;"><strong>Recipient (TO):</strong> ${toEmail}</p>
-          <p style="margin: 0;"><strong>Verified At:</strong> ${timestamp}</p>
-        </div>
-        <p>Your institutional system is now fully configured to deliver instant task assignments, submission reminders, and faculty group notifications.</p>
-      </div>
-    `
-  });
+  const strategies = [
+    { name: 'smtp.gmail.com:587 (STARTTLS)', options: { host: 'smtp.gmail.com', port: 587, secure: false, requireTLS: true, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } },
+    { name: 'Gmail Native Service', options: { service: 'gmail', auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } },
+    { name: 'smtp.gmail.com:465 (SSL)', options: { host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } },
+    { name: 'smtp-relay.gmail.com:587', options: { host: 'smtp-relay.gmail.com', port: 587, secure: false, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } }
+  ];
+
+  let lastErr = null;
+  for (const strat of strategies) {
+    try {
+      console.log(`[SMTP Test Diagnostic] Attempting ${strat.name} for ${smtpUser}...`);
+      const testTransporter = nodemailer.createTransport(strat.options);
+      const info = await testTransporter.sendMail({
+        from,
+        to: toEmail,
+        subject: 'TaskTrack Pro: Gmail / Workspace SMTP Configuration Verified',
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #22c55e; border-radius: 8px;">
+            <h2 style="color: #16a34a; margin-top: 0;">🎉 SMTP Email Configuration Verified!</h2>
+            <p>Congratulations! Your Google Workspace SMTP credentials have been verified via <strong>${strat.name}</strong> and are working successfully.</p>
+            <div style="background: #f0fdf4; padding: 15px; border-left: 4px solid #16a34a; margin: 15px 0; border-radius: 4px;">
+              <p style="margin: 0 0 5px 0;"><strong>Sender (FROM):</strong> ${from}</p>
+              <p style="margin: 0 0 5px 0;"><strong>Recipient (TO):</strong> ${toEmail}</p>
+              <p style="margin: 0;"><strong>Verified At:</strong> ${timestamp}</p>
+            </div>
+            <p>Your institutional system is now fully configured to deliver instant task assignments, submission reminders, and faculty group notifications.</p>
+          </div>
+        `
+      });
+
+      emailTransporter = testTransporter;
+      emailTransporter.isMock = false;
+      lastTransporterConfigKey = `verified-${strat.name}`;
+      console.log(`[SMTP Test Diagnostic] SUCCESS via ${strat.name}!`);
+      return { ...info, strategy: strat.name, isMock: false };
+    } catch (err) {
+      console.warn(`[SMTP Test Diagnostic] ${strat.name} failed:`, err.message);
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error('All Google SMTP connection strategies failed or timed out.');
 }
 
 async function sendTaskAssignedEmail(teacher, task, deadline) {

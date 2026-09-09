@@ -3444,9 +3444,10 @@ router.post('/admin/test-email', auth.requireAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Test email successfully sent to ${targetEmail}`,
+      message: `Test email successfully sent to ${targetEmail}${info.strategy ? ' (via ' + info.strategy + ')' : ''}`,
       details: {
         messageId: info.messageId,
+        strategy: info.strategy,
         smtp_user: process.env.SMTP_USER,
         smtp_host: process.env.SMTP_HOST
       }
