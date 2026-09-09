@@ -712,10 +712,10 @@ async function sendTestEmail(toEmail) {
   const timestamp = new Date().toLocaleString();
 
   const strategies = [
-    { name: 'smtp.gmail.com:587 (STARTTLS)', options: { host: 'smtp.gmail.com', port: 587, secure: false, requireTLS: true, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } },
-    { name: 'Gmail Native Service', options: { service: 'gmail', auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } },
-    { name: 'smtp.gmail.com:465 (SSL)', options: { host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } },
-    { name: 'smtp-relay.gmail.com:587', options: { host: 'smtp-relay.gmail.com', port: 587, secure: false, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10000 } }
+    { name: 'smtp.gmail.com:587 (STARTTLS)', options: { host: 'smtp.gmail.com', port: 587, secure: false, requireTLS: true, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 3500, greetingTimeout: 3500, socketTimeout: 5000 } },
+    { name: 'Gmail Native Service', options: { service: 'gmail', auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 3500, greetingTimeout: 3500, socketTimeout: 5000 } },
+    { name: 'smtp.gmail.com:465 (SSL)', options: { host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 3500, greetingTimeout: 3500, socketTimeout: 5000 } },
+    { name: 'smtp-relay.gmail.com:587', options: { host: 'smtp-relay.gmail.com', port: 587, secure: false, auth: { user: smtpUser, pass: smtpPass }, tls: { rejectUnauthorized: false }, connectionTimeout: 3500, greetingTimeout: 3500, socketTimeout: 5000 } }
   ];
 
   let lastErr = null;

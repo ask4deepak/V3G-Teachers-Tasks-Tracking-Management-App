@@ -5329,15 +5329,8 @@ async function handleSendTestEmail(event) {
   btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Sending...`;
   resDiv.style.display = 'none';
 
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timeoutId = controller ? setTimeout(() => controller.abort(), 15000) : null;
-
   try {
-    const fetchOptions = { method: 'POST', body: { to_email } };
-    if (controller) fetchOptions.signal = controller.signal;
-
-    const res = await api('/admin/test-email', fetchOptions);
-    if (timeoutId) clearTimeout(timeoutId);
+    const res = await api('/admin/test-email', { method: 'POST', body: { to_email } });
 
     resDiv.style.display = 'block';
     resDiv.innerHTML = `
@@ -5349,17 +5342,15 @@ async function handleSendTestEmail(event) {
     btn.disabled = false;
     btn.innerHTML = `<i class="fa-solid fa-paper-plane"></i> Send Another`;
   } catch (err) {
-    if (timeoutId) clearTimeout(timeoutId);
     resDiv.style.display = 'block';
-    const errorMsg = err.name === 'AbortError' ? 'SMTP test request timed out after 15 seconds.' : err.message;
     resDiv.innerHTML = `
       <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b; padding:12px; border-radius:6px; font-size:0.9rem;">
-        <i class="fa-solid fa-circle-exclamation"></i> <strong>SMTP Notice / Error:</strong> ${escapeHtml(errorMsg)}
+        <i class="fa-solid fa-circle-exclamation"></i> <strong>SMTP Notice / Error:</strong> ${escapeHtml(err.message)}
         <div style="font-size:0.8rem; margin-top:6px; color:#b91c1c;">
           For Google Workspace (e.g. <code>contact@srbps.com</code>):<br/>
           1. Enable 2-Step Verification on <code>contact@srbps.com</code>.<br/>
           2. Generate a 16-character App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#b91c1c; text-decoration:underline;">myaccount.google.com/apppasswords</a>.<br/>
-          3. Use <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_PORT=465</code>, and enter the 16-character App Password into <code>SMTP_PASS</code> in Railway / <code>.env</code>.
+          3. Use <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_PORT=587</code>, and enter the 16-character App Password into <code>SMTP_PASS</code> in Railway / <code>.env</code>.
         </div>
       </div>
     `;
