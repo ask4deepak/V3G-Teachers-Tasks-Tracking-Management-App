@@ -5329,8 +5329,16 @@ async function handleSendTestEmail(event) {
   btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Sending...`;
   resDiv.style.display = 'none';
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 15000) : null;
+
   try {
-    const res = await api('/admin/test-email', { method: 'POST', body: { to_email } });
+    const fetchOptions = { method: 'POST', body: { to_email } };
+    if (controller) fetchOptions.signal = controller.signal;
+
+    const res = await api('/admin/test-email', fetchOptions);
+    if (timeoutId) clearTimeout(timeoutId);
+
     resDiv.style.display = 'block';
     resDiv.innerHTML = `
       <div style="background:#f0fdf4; border:1px solid #86efac; color:#166534; padding:12px; border-radius:6px; font-size:0.9rem;">
@@ -5341,10 +5349,12 @@ async function handleSendTestEmail(event) {
     btn.disabled = false;
     btn.innerHTML = `<i class="fa-solid fa-paper-plane"></i> Send Another`;
   } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
     resDiv.style.display = 'block';
+    const errorMsg = err.name === 'AbortError' ? 'SMTP test request timed out after 15 seconds.' : err.message;
     resDiv.innerHTML = `
       <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b; padding:12px; border-radius:6px; font-size:0.9rem;">
-        <i class="fa-solid fa-circle-exclamation"></i> <strong>SMTP Notice / Error:</strong> ${escapeHtml(err.message)}
+        <i class="fa-solid fa-circle-exclamation"></i> <strong>SMTP Notice / Error:</strong> ${escapeHtml(errorMsg)}
         <div style="font-size:0.8rem; margin-top:6px; color:#b91c1c;">
           For Google Workspace (e.g. <code>contact@srbps.com</code>):<br/>
           1. Enable 2-Step Verification on <code>contact@srbps.com</code>.<br/>
