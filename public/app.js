@@ -1670,6 +1670,7 @@ async function openTaskEditor(taskId) {
       questions: questions.length > 0 ? questions : [{ key: 'Q1', label: '', type: 'short_text', required: true }],
       campus_ids: campuses,
       audience_rules: {
+        operator: audienceRules.operator || 'AND',
         departments: audienceRules.departments || [],
         designations: audienceRules.designations || [],
         subjects: audienceRules.subjects || [],
@@ -1717,6 +1718,7 @@ async function renderTaskBuilder(container) {
       ],
       campus_ids: state.user.authorizedCampusIds && state.user.authorizedCampusIds.length > 0 ? [state.user.authorizedCampusIds[0]] : [],
       audience_rules: {
+        operator: 'AND',
         departments: [],
         designations: [],
         subjects: [],
@@ -2012,20 +2014,37 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         api('/groups')
       ]);
 
-      const ar = tb.audience_rules;
+      const ar = tb.audience_rules || {};
+      const currentOp = ar.operator || 'AND';
 
       return `
         <h3>Step 4: Target Audience Rules</h3>
-        <p style="color:var(--text-muted); margin-bottom: 20px;">
-          Filter rules combine using <strong>AND</strong> logic across categories and <strong>OR</strong> within each category.
-        </p>
+        
+        <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:16px; margin: 16px 0 24px;">
+          <div style="font-weight:600; font-size:0.95rem; margin-bottom:6px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-code-fork" style="color:var(--primary);"></i> Audience Combination Operator
+          </div>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:12px;">
+            If no filter options are checked below, <strong>all teachers</strong> from the selected campuses will be included. If multiple filter categories are checked, choose how they combine:
+          </p>
+          <div style="display:flex; flex-wrap:wrap; gap:20px; align-items:center;">
+            <label class="radio-label" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-weight:500;">
+              <input type="radio" name="tb_operator" value="AND" ${currentOp === 'AND' ? 'checked' : ''} />
+              <span><strong>AND Logic</strong> (Recipient must match <em>ALL</em> selected active categories)</span>
+            </label>
+            <label class="radio-label" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-weight:500;">
+              <input type="radio" name="tb_operator" value="OR" ${currentOp === 'OR' ? 'checked' : ''} />
+              <span><strong>OR Logic</strong> (Recipient matches if they satisfy <em>ANY</em> selected category)</span>
+            </label>
+          </div>
+        </div>
 
         <div class="form-group">
           <label>Departments</label>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${depts.map(d => `
               <label class="checkbox-label">
-                <input type="checkbox" name="tb_depts" value="${d.id}" ${ar.departments.includes(d.id) ? 'checked' : ''} />
+                <input type="checkbox" name="tb_depts" value="${d.id}" ${(ar.departments || []).includes(d.id) ? 'checked' : ''} />
                 ${escapeHtml(d.name)}
               </label>
             `).join('')}
@@ -2037,7 +2056,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${desigs.map(d => `
               <label class="checkbox-label">
-                <input type="checkbox" name="tb_desigs" value="${d.id}" ${ar.designations.includes(d.id) ? 'checked' : ''} />
+                <input type="checkbox" name="tb_desigs" value="${d.id}" ${(ar.designations || []).includes(d.id) ? 'checked' : ''} />
                 ${escapeHtml(d.name)}
               </label>
             `).join('')}
@@ -2049,19 +2068,33 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${subjs.map(s => `
               <label class="checkbox-label">
-                <input type="checkbox" name="tb_subjs" value="${s.id}" ${ar.subjects.includes(s.id) ? 'checked' : ''} />
+                <input type="checkbox" name="tb_subjs" value="${s.id}" ${(ar.subjects || []).includes(s.id) ? 'checked' : ''} />
                 ${escapeHtml(s.name)}
               </label>
             `).join('')}
           </div>
         </div>
 
+        ${cats && cats.length > 0 ? `
+          <div class="form-group">
+            <label>Categories</label>
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
+              ${cats.map(c => `
+                <label class="checkbox-label">
+                  <input type="checkbox" name="tb_cats" value="${c.id}" ${(ar.categories || []).includes(c.id) ? 'checked' : ''} />
+                  ${escapeHtml(c.name)}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+
         <div class="form-group">
           <label>Faculty Groups</label>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${groups.map(g => `
               <label class="checkbox-label">
-                <input type="checkbox" name="tb_groups" value="${g.id}" ${ar.groups.includes(g.id) ? 'checked' : ''} />
+                <input type="checkbox" name="tb_groups" value="${g.id}" ${(ar.groups || []).includes(g.id) ? 'checked' : ''} />
                 ${escapeHtml(g.name)}
               </label>
             `).join('')}
@@ -2299,9 +2332,12 @@ function saveTaskBuilderCampuses() {
 }
 
 function saveTaskBuilderAudience() {
+  const op = document.querySelector('input[name="tb_operator"]:checked')?.value || 'AND';
+  state.taskBuilder.audience_rules.operator = op;
   state.taskBuilder.audience_rules.departments = Array.from(document.querySelectorAll('input[name="tb_depts"]:checked')).map(el => el.value);
   state.taskBuilder.audience_rules.designations = Array.from(document.querySelectorAll('input[name="tb_desigs"]:checked')).map(el => el.value);
   state.taskBuilder.audience_rules.subjects = Array.from(document.querySelectorAll('input[name="tb_subjs"]:checked')).map(el => el.value);
+  state.taskBuilder.audience_rules.categories = Array.from(document.querySelectorAll('input[name="tb_cats"]:checked')).map(el => el.value);
   state.taskBuilder.audience_rules.groups = Array.from(document.querySelectorAll('input[name="tb_groups"]:checked')).map(el => el.value);
 
   const ct = document.getElementById('tb-class-teacher').value;

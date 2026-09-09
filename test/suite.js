@@ -281,6 +281,34 @@ West Coast Campus, WCC`;
     assert.strictEqual(recipients[0].id, teacherSarahId);
   });
 
+  await test('Audience resolution with NO filter rules selected returns all campus teachers', async () => {
+    const recipients = await services.resolveTaskAudience([testCampusId], {});
+    assert.ok(recipients.length > 0);
+    assert.ok(recipients.some(r => r.id === teacherSarahId));
+  });
+
+  await test('Audience resolution with AND vs OR operator', async () => {
+    const store = db.getMemoryStore();
+    const mathSub = store.master_values.find(m => m.name === 'Advanced Calculus');
+    assert.ok(mathSub);
+
+    // With AND logic: requires matching mathSub AND class_teacher = false (Sarah is class_teacher = true, so AND should fail)
+    const recipientsAnd = await services.resolveTaskAudience([testCampusId], {
+      operator: 'AND',
+      subjects: [mathSub.id],
+      class_teacher_status: false
+    });
+    assert.strictEqual(recipientsAnd.some(r => r.id === teacherSarahId), false);
+
+    // With OR logic: requires matching mathSub OR class_teacher = false (Sarah has mathSub, so OR should match)
+    const recipientsOr = await services.resolveTaskAudience([testCampusId], {
+      operator: 'OR',
+      subjects: [mathSub.id],
+      class_teacher_status: false
+    });
+    assert.ok(recipientsOr.some(r => r.id === teacherSarahId));
+  });
+
   await test('Create, publish and reorder tasks', async () => {
     const store = db.getMemoryStore();
     store.tasks.push({

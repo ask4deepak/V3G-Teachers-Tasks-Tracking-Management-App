@@ -28,8 +28,9 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
     categories = [],
     groups = [],
     class_teacher_status = null,
-    specific_users = []
-  } = audienceRules;
+    specific_users = [],
+    operator = 'AND'
+  } = (audienceRules || {});
 
   const exclusionsSet = new Set(recipientExclusions || []);
 
@@ -37,21 +38,51 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
   let userAttributes = [];
   let groupMemberships = [];
 
+  const userCampusMap = new Map();
+  const userDeptMap = new Map();
+  const userDesigMap = new Map();
+  const userSubjMap = new Map();
+  const userCatMap = new Map();
+  const userGroupMap = new Map();
+
   if (db.isMemoryFallback()) {
     const store = db.getMemoryStore();
     const campusTeacherIds = store.user_attributes.filter(a => campusIds.includes(a.campus_id)).map(a => a.user_id);
-    allTeachers = store.users.filter(u => u.status === 'ACTIVE' && (campusTeacherIds.includes(u.id) || (u.campus_id && campusIds.includes(u.campus_id))));
-    userAttributes = store.user_attributes;
-    groupMemberships = store.group_memberships.filter(m => m.status === 'APPROVED');
+    const accessTeacherIds = (store.user_access || []).filter(a => campusIds.includes(a.campus_id)).map(a => a.user_id);
+    
+    allTeachers = store.users.filter(u => u.status === 'ACTIVE' && (
+      (u.campus_id && campusIds.includes(u.campus_id)) ||
+      campusTeacherIds.includes(u.id) ||
+      accessTeacherIds.includes(u.id)
+    ));
+    userAttributes = store.user_attributes || [];
+    groupMemberships = (store.group_memberships || []).filter(m => m.status === 'APPROVED');
+
+    for (const u of allTeachers) {
+      if (!userCampusMap.has(u.id)) userCampusMap.set(u.id, new Set());
+      if (u.campus_id) userCampusMap.get(u.id).add(u.campus_id);
+      (store.user_access || []).filter(a => a.user_id === u.id).forEach(a => userCampusMap.get(u.id).add(a.campus_id));
+      (store.user_attributes || []).filter(a => a.user_id === u.id).forEach(a => userCampusMap.get(u.id).add(a.campus_id));
+    }
   } else {
     const teachersRes = await db.query(`
-      SELECT DISTINCT u.id, u.email, u.employee_code, u.first_name, u.last_name, u.display_name, u.class_teacher_status, u.status
+      SELECT DISTINCT u.id, u.email, u.employee_code, u.first_name, u.last_name, u.display_name, u.class_teacher_status, u.status,
+             COALESCE(u.campus_id, ua.campus_id, acc.campus_id) as primary_campus_id,
+             COALESCE(c.name, 'Default Campus') as campus_name
       FROM users u
-      JOIN user_attributes ua ON u.id = ua.user_id
-      WHERE u.status = 'ACTIVE' AND ua.campus_id = ANY($1)
+      LEFT JOIN user_attributes ua ON u.id = ua.user_id
+      LEFT JOIN user_access acc ON u.id = acc.user_id
+      LEFT JOIN campuses c ON c.id = COALESCE(u.campus_id, ua.campus_id, acc.campus_id)
+      WHERE u.status = 'ACTIVE' 
+        AND (u.campus_id = ANY($1) OR ua.campus_id = ANY($1) OR acc.campus_id = ANY($1))
       ORDER BY u.display_name ASC
     `, [campusIds]);
     allTeachers = teachersRes.rows;
+
+    for (const t of allTeachers) {
+      if (!userCampusMap.has(t.id)) userCampusMap.set(t.id, new Set());
+      if (t.primary_campus_id) userCampusMap.get(t.id).add(t.primary_campus_id);
+    }
 
     const attrsRes = await db.query(`
       SELECT ua.user_id, ua.campus_id, ua.master_value_id, mv.master_type, mv.name as master_name
@@ -71,13 +102,6 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
   }
 
   // Pre-index user attributes and groups for fast lookup
-  const userDeptMap = new Map();
-  const userDesigMap = new Map();
-  const userSubjMap = new Map();
-  const userCatMap = new Map();
-  const userCampusMap = new Map();
-  const userGroupMap = new Map();
-
   for (const attr of userAttributes) {
     if (!campusIds.includes(attr.campus_id)) continue;
 
@@ -137,62 +161,61 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
     // Specific user inclusion check
     const isExplicitlySelected = specific_users && specific_users.includes(userId);
 
-    // Filter Category checks (AND across categories, OR within each category)
-    let matchesFilters = true;
+    // Filter Category checks (AND or OR across categories, OR within each category)
+    const activeFilters = [];
 
     // 1. Department
-    if (departments.length > 0) {
+    if (departments && departments.length > 0) {
       const userDepts = userDeptMap.get(userId) || new Set();
-      const hasMatch = departments.some(d => userDepts.has(d));
-      if (!hasMatch) matchesFilters = false;
+      activeFilters.push(departments.some(d => userDepts.has(d)));
     }
 
     // 2. Designation
-    if (matchesFilters && designations.length > 0) {
+    if (designations && designations.length > 0) {
       const userDesigs = userDesigMap.get(userId) || new Set();
-      const hasMatch = designations.some(d => userDesigs.has(d));
-      if (!hasMatch) matchesFilters = false;
+      activeFilters.push(designations.some(d => userDesigs.has(d)));
     }
 
     // 3. Subject
-    if (matchesFilters && subjects.length > 0) {
+    if (subjects && subjects.length > 0) {
       const userSubs = userSubjMap.get(userId) || new Set();
-      const hasMatch = subjects.some(s => userSubs.has(s));
-      if (!hasMatch) matchesFilters = false;
+      activeFilters.push(subjects.some(s => userSubs.has(s)));
     }
 
     // 4. Category
-    if (matchesFilters && categories.length > 0) {
+    if (categories && categories.length > 0) {
       const userCats = userCatMap.get(userId) || new Set();
-      const hasMatch = categories.some(c => userCats.has(c));
-      if (!hasMatch) matchesFilters = false;
+      activeFilters.push(categories.some(c => userCats.has(c)));
     }
 
     // 5. Group
-    if (matchesFilters && groups.length > 0) {
+    if (groups && groups.length > 0) {
       const userGrps = userGroupMap.get(userId) || new Set();
-      const hasMatch = groups.some(g => userGrps.has(g));
-      if (!hasMatch) matchesFilters = false;
+      activeFilters.push(groups.some(g => userGrps.has(g)));
     }
 
     // 6. Class Teacher Status
-    if (matchesFilters && class_teacher_status !== null && class_teacher_status !== undefined && class_teacher_status !== '') {
+    if (class_teacher_status !== null && class_teacher_status !== undefined && class_teacher_status !== '') {
       const reqBool = class_teacher_status === true || class_teacher_status === 'true' || class_teacher_status === 'yes';
-      if (Boolean(teacher.class_teacher_status) !== reqBool) {
-        matchesFilters = false;
+      activeFilters.push(Boolean(teacher.class_teacher_status) === reqBool);
+    }
+
+    let matchesFilters = true;
+    if (activeFilters.length > 0) {
+      if (operator === 'OR') {
+        matchesFilters = activeFilters.some(Boolean);
+      } else {
+        matchesFilters = activeFilters.every(Boolean);
       }
     }
 
-    // Combine rule matching or explicit selection
     const isEligible = matchesFilters || isExplicitlySelected;
 
     if (isEligible) {
       const isExcluded = exclusionsSet.has(userId);
-      // Primary campus for assignment
-      const primaryCampusId = [...userCampuses][0];
+      const primaryCampusId = teacher.primary_campus_id || [...userCampuses][0];
 
-      // Retrieve display details
-      let campusName = 'North Campus';
+      let campusName = teacher.campus_name || 'Main Campus';
       if (db.isMemoryFallback()) {
         const c = db.getMemoryStore().campuses.find(cp => cp.id === primaryCampusId);
         if (c) campusName = c.name;
@@ -214,7 +237,7 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
   }
 
   // Always sort alphabetically by display_name
-  eligibleTeachers.sort((a, b) => a.display_name.localeCompare(b.display_name));
+  eligibleTeachers.sort((a, b) => (a.display_name || '').localeCompare(b.display_name || ''));
   return eligibleTeachers;
 }
 
