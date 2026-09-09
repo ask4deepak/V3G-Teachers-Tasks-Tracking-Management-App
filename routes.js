@@ -2645,6 +2645,19 @@ router.post('/import/preview', auth.requirePermission('imports.execute'), upload
     const sheetName = wb.SheetNames[0];
     const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName]);
 
+    let campuses = [];
+    let existingEmails = new Set();
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      campuses = store.campuses;
+      store.users.forEach(u => existingEmails.add(u.email.toLowerCase()));
+    } else {
+      const cRes = await db.query('SELECT * FROM campuses');
+      campuses = cRes.rows;
+      const uRes = await db.query('SELECT LOWER(email) as email FROM users');
+      uRes.rows.forEach(r => existingEmails.add(r.email));
+    }
+
     const preview = {
       total_rows: rawRows.length,
       new_rows: 0,
@@ -2655,11 +2668,26 @@ router.post('/import/preview', auth.requirePermission('imports.execute'), upload
     };
 
     rawRows.forEach((row, i) => {
-      const email = row['Email'] || row['Email (Key)'];
+      const email = (row['Email'] || row['Email (Key)'] || '').toString().trim().toLowerCase();
       if (!email) {
         preview.errors.push(`Row ${i + 1}: Missing mandatory field 'Email'`);
       } else {
-        preview.new_rows++;
+        if (existingEmails.has(email)) {
+          preview.update_rows++;
+        } else {
+          preview.new_rows++;
+        }
+      }
+
+      const campusName = (row['Campus'] || '').toString().trim();
+      if (campusName) {
+        const matched = campuses.find(c => 
+          (c.name && c.name.trim().toLowerCase() === campusName.toLowerCase()) || 
+          (c.code && c.code.trim().toLowerCase() === campusName.toLowerCase())
+        );
+        if (!matched && campuses.length > 0) {
+          preview.warnings.push(`Row ${i + 1}: Campus '${campusName}' not found in active campuses. Will fallback to default '${campuses[0].name}'.`);
+        }
       }
     });
 
@@ -2721,8 +2749,14 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
       const campusName = (row['Campus'] || '').toString().trim();
 
       // Resolve Campus
-      let campus = campuses.find(c => c.name.toLowerCase() === campusName.toLowerCase());
-      if (!campus) {
+      let campus = null;
+      if (campusName) {
+        campus = campuses.find(c => 
+          (c.name && c.name.trim().toLowerCase() === campusName.toLowerCase()) || 
+          (c.code && c.code.trim().toLowerCase() === campusName.toLowerCase())
+        );
+      }
+      if (!campus && campuses.length > 0) {
         campus = campuses[0];
       }
 
@@ -2747,13 +2781,13 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
       if (subjsStr) {
         subjsStr.split(',').map(s => s.trim()).forEach(sName => {
           const mv = masterValues.find(m => m.master_type === 'SUBJECT' && m.name.toLowerCase() === sName.toLowerCase());
-          if (mv) matchedMasterIds.push(mv.id);
+          if (mv && !matchedMasterIds.includes(mv.id)) matchedMasterIds.push(mv.id);
         });
       }
       if (catsStr) {
         catsStr.split(',').map(c => c.trim()).forEach(cName => {
           const mv = masterValues.find(m => m.master_type === 'CATEGORY' && m.name.toLowerCase() === cName.toLowerCase());
-          if (mv) matchedMasterIds.push(mv.id);
+          if (mv && !matchedMasterIds.includes(mv.id)) matchedMasterIds.push(mv.id);
         });
       }
 
@@ -2773,8 +2807,25 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
           }
           existingUser.updated_at = now;
 
-          // Replace attributes
+          // Update user_access campus
           if (campus) {
+            let access = store.user_access.find(a => a.user_id === existingUser.id);
+            if (access) {
+              access.campus_id = campus.id;
+              access.updated_at = now;
+            } else if (teacherRole) {
+              store.user_access.push({
+                id: uuidv4(),
+                user_id: existingUser.id,
+                role_id: teacherRole.id,
+                campus_id: campus.id,
+                permission_overrides: null,
+                created_at: now,
+                updated_at: now
+              });
+            }
+
+            // Replace attributes
             store.user_attributes = store.user_attributes.filter(a => a.user_id !== existingUser.id);
             for (const mid of matchedMasterIds) {
               store.user_attributes.push({
@@ -2850,6 +2901,20 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
                 WHERE id = $8
               `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, userId]);
             }
+
+            if (campus) {
+              const uaCheck = await client.query('SELECT id FROM user_access WHERE user_id = $1', [userId]);
+              if (uaCheck.rows.length > 0) {
+                await client.query('UPDATE user_access SET campus_id = $1, updated_at = NOW() WHERE user_id = $2', [campus.id, userId]);
+              } else if (teacherRole) {
+                await client.query(`
+                  INSERT INTO user_access (id, user_id, role_id, campus_id, created_at, updated_at)
+                  VALUES ($1, $2, $3, $4, NOW(), NOW())
+                  ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
+                `, [uuidv4(), userId, teacherRole.id, campus.id]);
+              }
+            }
+
             updatedCount++;
           } else {
             userId = uuidv4();

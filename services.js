@@ -778,30 +778,111 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
   if (dataset === 'users') {
     let data = [];
     if (mode === 'EDIT') {
-      // Populate with existing users in scope
-      let teachers = [];
       if (db.isMemoryFallback()) {
-        teachers = db.getMemoryStore().users.filter(u => u.user_type === 'TEACHER');
+        const store = db.getMemoryStore();
+        let teachers = store.users.filter(u => u.user_type === 'TEACHER');
+        
+        data = teachers.map(t => {
+          const userAttrs = store.user_attributes.filter(a => a.user_id === t.id);
+          let campusName = '';
+          if (userAttrs.length > 0 && userAttrs[0].campus_id) {
+            const camp = store.campuses.find(c => c.id === userAttrs[0].campus_id);
+            if (camp) campusName = camp.name;
+          }
+          if (!campusName) {
+            const acc = store.user_access.find(a => a.user_id === t.id && a.campus_id);
+            if (acc) {
+              const camp = store.campuses.find(c => c.id === acc.campus_id);
+              if (camp) campusName = camp.name;
+            }
+          }
+
+          const getAttrNames = (type) => {
+            return userAttrs
+              .map(a => store.master_values.find(m => m.id === a.master_value_id && m.master_type === type))
+              .filter(Boolean)
+              .map(m => m.name);
+          };
+
+          const deptNames = getAttrNames('DEPARTMENT');
+          const desigNames = getAttrNames('DESIGNATION');
+          const subjNames = getAttrNames('SUBJECT');
+          const catNames = getAttrNames('CATEGORY');
+
+          return {
+            'Email (Key)': t.email,
+            'Employee Code': t.employee_code || '',
+            'First Name': t.first_name || '',
+            'Last Name': t.last_name || '',
+            'Phone': t.phone || '',
+            'Campus': campusName,
+            'Department': deptNames[0] || '',
+            'Designation': desigNames[0] || '',
+            'Subjects (Comma separated)': subjNames.join(', '),
+            'Categories (Comma separated)': catNames.join(', '),
+            'Class Teacher (Yes/No)': t.class_teacher_status ? 'Yes' : 'No',
+            'Status (ACTIVE/INACTIVE)': t.status || 'ACTIVE'
+          };
+        });
+
+        if (userContext && !userContext.isSuperAdmin && userContext.authorizedCampusIds) {
+          data = data.filter(row => {
+            const camp = store.campuses.find(c => c.name.toLowerCase() === (row.Campus || '').toLowerCase());
+            return camp && userContext.authorizedCampusIds.includes(camp.id);
+          });
+        }
       } else {
-        const res = await db.query('SELECT * FROM users WHERE user_type = $1 ORDER BY display_name ASC', ['TEACHER']);
-        teachers = res.rows;
+        let q = `
+          SELECT 
+            u.id, u.email, u.employee_code, u.first_name, u.last_name, u.phone, u.class_teacher_status, u.status,
+            COALESCE(c.name, ca.name, '') as campus_name,
+            (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DEPARTMENT' LIMIT 1) as department_name,
+            (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DESIGNATION' LIMIT 1) as designation_name,
+            (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'SUBJECT') as subjects,
+            (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY') as categories
+          FROM users u
+          LEFT JOIN LATERAL (
+            SELECT c1.name, ua1.campus_id FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id LIMIT 1
+          ) c ON true
+          LEFT JOIN LATERAL (
+            SELECT c2.name, acc2.campus_id FROM user_access acc2 JOIN campuses c2 ON acc2.campus_id = c2.id WHERE acc2.user_id = u.id AND acc2.campus_id IS NOT NULL LIMIT 1
+          ) ca ON true
+          WHERE u.user_type = 'TEACHER'
+        `;
+        const params = [];
+        if (userContext && !userContext.isSuperAdmin && userContext.authorizedCampusIds && userContext.authorizedCampusIds.length > 0) {
+          params.push(userContext.authorizedCampusIds);
+          q += ` AND (c.campus_id = ANY($1) OR ca.campus_id = ANY($1))`;
+        }
+        q += ` ORDER BY u.display_name ASC`;
+
+        const res = await db.query(q, params);
+        data = res.rows.map(t => ({
+          'Email (Key)': t.email,
+          'Employee Code': t.employee_code || '',
+          'First Name': t.first_name || '',
+          'Last Name': t.last_name || '',
+          'Phone': t.phone || '',
+          'Campus': t.campus_name || '',
+          'Department': t.department_name || '',
+          'Designation': t.designation_name || '',
+          'Subjects (Comma separated)': t.subjects || '',
+          'Categories (Comma separated)': t.categories || '',
+          'Class Teacher (Yes/No)': t.class_teacher_status ? 'Yes' : 'No',
+          'Status (ACTIVE/INACTIVE)': t.status || 'ACTIVE'
+        }));
       }
-      data = teachers.map(t => ({
-        'Email (Key)': t.email,
-        'Employee Code': t.employee_code || '',
-        'First Name': t.first_name,
-        'Last Name': t.last_name,
-        'Phone': t.phone || '',
-        'Campus': 'North Campus',
-        'Department': 'English',
-        'Designation': 'Senior Teacher',
-        'Subjects (Comma separated)': 'English Literature',
-        'Categories (Comma separated)': 'Senior Secondary Wing',
-        'Class Teacher (Yes/No)': t.class_teacher_status ? 'Yes' : 'No',
-        'Status (ACTIVE/INACTIVE)': t.status
-      }));
     } else {
       // Empty sample template with helpful instructions
+      let sampleCampus = 'Main Campus';
+      if (db.isMemoryFallback()) {
+        const store = db.getMemoryStore();
+        if (store.campuses.length > 0) sampleCampus = store.campuses[0].name;
+      } else {
+        const cRes = await db.query('SELECT name FROM campuses WHERE status = $1 ORDER BY name ASC LIMIT 1', ['ACTIVE']);
+        if (cRes.rows.length > 0) sampleCampus = cRes.rows[0].name;
+      }
+
       data = [
         {
           'Email': 'teacher.sample@institution.edu',
@@ -810,7 +891,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
           'Last Name': 'Doe',
           'Phone': '+1 555-0199',
           'Password (Optional)': 'Welcome@2026',
-          'Campus': 'North Campus',
+          'Campus': sampleCampus,
           'Department': 'Mathematics',
           'Designation': 'PGT (Post Graduate Teacher)',
           'Subjects (Comma separated)': 'Mathematics, Physics',

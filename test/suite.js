@@ -417,6 +417,45 @@ West Coast Campus, WCC`;
     assert.strictEqual(rows[0]['Password (Optional)'], 'Welcome@2026');
   });
 
+  await test('EDIT import template dynamically populates teacher campus and master attributes', async () => {
+    const buffer = await services.generateImportTemplate('EDIT', 'users');
+    assert.ok(buffer);
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+    assert.ok(rows.length > 0);
+    const sarahRow = rows.find(r => r['Email (Key)'] === 'teacher.sarah@institution.edu');
+    assert.ok(sarahRow, 'Sarah Johnson should be exported in the EDIT template');
+    assert.strictEqual(sarahRow['Campus'], 'North Valley High Campus');
+    assert.strictEqual(sarahRow['Subjects (Comma separated)'], 'Advanced Calculus');
+    assert.strictEqual(sarahRow['Categories (Comma separated)'], 'High School Wing');
+  });
+
+  console.log('\n--- Phase 7: Teacher Role & Access Boundary Verification ---');
+
+  await test('Teacher authenticated context has ONLY teacher role and NO admin permissions', async () => {
+    const teacherUser = await auth.authenticate('teacher.sarah@institution.edu', 'Teacher@123');
+    assert.strictEqual(teacherUser.user_type, 'TEACHER');
+    assert.strictEqual(teacherUser.isSuperAdmin, false);
+
+    // Verify teacher lacks administrative permissions
+    assert.strictEqual(auth.hasPermission(teacherUser, 'tasks.create'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'tasks.edit'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'tasks.publish'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'campuses.manage'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'users.create'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'users.edit'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'masters.create'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'imports.execute'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'audit.view'), false);
+    assert.strictEqual(auth.hasPermission(teacherUser, 'roles.manage'), false);
+
+    // Verify teacher is confined strictly to their assigned campus
+    assert.ok(teacherUser.authorizedCampusIds.includes(testCampusId));
+    assert.throws(() => auth.assertCampusAccess(teacherUser, 'unauthorized-campus-999'), /Unauthorized access attempt/);
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

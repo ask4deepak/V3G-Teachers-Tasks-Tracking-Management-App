@@ -198,25 +198,13 @@ async function initDb() {
         console.log('[Database] Seed data checked/applied.');
       }
 
-      // Clean legacy demo records and provision Deepak Gupta as Super Admin
+      // Ensure Super Administrator User (Deepak Gupta) exists without wiping existing application data
       const hash = await bcrypt.hash('Admin@123', 10);
-
-      await pool.query(`
-        DELETE FROM submissions;
-        DELETE FROM assignments;
-        DELETE FROM tasks;
-        DELETE FROM group_memberships;
-        DELETE FROM groups;
-        DELETE FROM user_attributes;
-        DELETE FROM user_access WHERE user_id IN (SELECT id FROM users WHERE email != 'ask4deepak@gmail.com');
-        DELETE FROM users WHERE email != 'ask4deepak@gmail.com';
-        DELETE FROM master_values;
-      `);
 
       await pool.query(`
         INSERT INTO users (id, email, password_hash, user_type, employee_code, first_name, last_name, display_name, status)
         VALUES ('a1111111-1111-1111-1111-111111111111', 'ask4deepak@gmail.com', $1, 'SUPER_ADMIN', 'EMP001', 'Deepak', 'Gupta', 'Deepak Gupta', 'ACTIVE')
-        ON CONFLICT (email) DO UPDATE SET password_hash = $1, status = 'ACTIVE', display_name = 'Deepak Gupta', user_type = 'SUPER_ADMIN'
+        ON CONFLICT (email) DO NOTHING
       `, [hash]);
 
       await pool.query(`
@@ -225,7 +213,7 @@ async function initDb() {
         ON CONFLICT (id) DO NOTHING
       `);
 
-      console.log('[Database] Seeded clean state with Super-Admin ask4deepak@gmail.com.');
+      console.log('[Database] Database initialized and verified.');
       return;
     } catch (err) {
       console.warn('[Database] PostgreSQL connection failed (' + err.message + '). Activating in-memory fallback store for local development.');
