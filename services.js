@@ -560,9 +560,8 @@ function getEmailTransporter() {
   // Strip spaces in Google App Passwords (e.g. "abcd efgh ijkl mnop" -> "abcdefghijklmnop")
   smtpPass = smtpPass.replace(/\s+/g, '');
 
-  const isGmail = smtpHost.includes('gmail') || smtpHost.includes('googlemail') || smtpUser.endsWith('@gmail.com') || smtpHost === 'smtp.gmail.com';
   const rawPort = process.env.SMTP_PORT;
-  const smtpPort = parseInt(rawPort || (isGmail ? '465' : '587'), 10);
+  const smtpPort = parseInt(rawPort || '587', 10);
 
   let smtpSecure;
   if (process.env.SMTP_SECURE !== undefined && process.env.SMTP_SECURE !== '') {
@@ -580,14 +579,14 @@ function getEmailTransporter() {
     smtpSecure = true;
   }
 
-  const currentConfigKey = `${smtpHost}:${smtpUser}:${smtpPass}:${smtpPort}:${smtpSecure}:${isGmail}`;
+  const isGmailService = (process.env.SMTP_SERVICE || '').toLowerCase() === 'gmail';
+  const currentConfigKey = `${smtpHost}:${smtpUser}:${smtpPass}:${smtpPort}:${smtpSecure}:${isGmailService}`;
 
   if (!emailTransporter || lastTransporterConfigKey !== currentConfigKey) {
-    if (smtpHost && smtpUser && smtpPass) {
+    if ((smtpHost || isGmailService) && smtpUser && smtpPass) {
       let transportOptions;
 
-      if (isGmail) {
-        // Use Nodemailer's native service definition for Gmail / Google Workspace (bypasses port/host connection timeouts)
+      if (isGmailService) {
         transportOptions = {
           service: 'gmail',
           auth: {
@@ -597,13 +596,13 @@ function getEmailTransporter() {
           tls: {
             rejectUnauthorized: false
           },
-          connectionTimeout: 12000,
-          greetingTimeout: 12000,
-          socketTimeout: 15000
+          connectionTimeout: 15000,
+          greetingTimeout: 15000,
+          socketTimeout: 20000
         };
       } else {
         transportOptions = {
-          host: smtpHost,
+          host: smtpHost || 'smtp.gmail.com',
           port: smtpPort,
           secure: smtpSecure,
           auth: {
@@ -613,16 +612,16 @@ function getEmailTransporter() {
           tls: {
             rejectUnauthorized: false
           },
-          connectionTimeout: 12000,
-          greetingTimeout: 12000,
-          socketTimeout: 15000
+          connectionTimeout: 15000,
+          greetingTimeout: 15000,
+          socketTimeout: 20000
         };
       }
 
       emailTransporter = nodemailer.createTransport(transportOptions);
       emailTransporter.isMock = false;
       lastTransporterConfigKey = currentConfigKey;
-      console.log(`[Email Service] Configured SMTP Transport for ${smtpUser} (service: ${isGmail ? 'gmail' : 'custom host ' + smtpHost + ':' + smtpPort})`);
+      console.log(`[Email Service] Configured SMTP Transport for ${smtpUser} via ${transportOptions.host || 'gmail-service'}:${smtpPort || 465}`);
     } else {
       // Mock transporter for development/unconfigured states
       emailTransporter = {
