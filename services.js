@@ -780,13 +780,14 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
     if (mode === 'EDIT') {
       if (db.isMemoryFallback()) {
         const store = db.getMemoryStore();
-        let teachers = store.users.filter(u => u.user_type === 'TEACHER');
+        let teachers = store.users.filter(u => u.user_type === 'TEACHER' || u.user_type === 'ADMIN');
         
         data = teachers.map(t => {
           const userAttrs = store.user_attributes.filter(a => a.user_id === t.id);
           let campusName = '';
-          if (userAttrs.length > 0 && userAttrs[0].campus_id) {
-            const camp = store.campuses.find(c => c.id === userAttrs[0].campus_id);
+          const attrWithCamp = userAttrs.find(a => a.campus_id);
+          if (attrWithCamp) {
+            const camp = store.campuses.find(c => c.id === attrWithCamp.campus_id);
             if (camp) campusName = camp.name;
           }
           if (!campusName) {
@@ -833,7 +834,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
         }
       } else {
         let q = `
-          SELECT 
+          SELECT DISTINCT ON (u.id)
             u.id, u.email, u.employee_code, u.first_name, u.last_name, u.phone, u.class_teacher_status, u.status,
             COALESCE(c.name, ca.name, '') as campus_name,
             (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DEPARTMENT' LIMIT 1) as department_name,
@@ -842,19 +843,19 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
             (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY') as categories
           FROM users u
           LEFT JOIN LATERAL (
-            SELECT c1.name, ua1.campus_id FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id LIMIT 1
+            SELECT c1.name, ua1.campus_id FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id AND ua1.campus_id IS NOT NULL LIMIT 1
           ) c ON true
           LEFT JOIN LATERAL (
             SELECT c2.name, acc2.campus_id FROM user_access acc2 JOIN campuses c2 ON acc2.campus_id = c2.id WHERE acc2.user_id = u.id AND acc2.campus_id IS NOT NULL LIMIT 1
           ) ca ON true
-          WHERE u.user_type = 'TEACHER'
+          WHERE u.user_type IN ('TEACHER', 'ADMIN')
         `;
         const params = [];
         if (userContext && !userContext.isSuperAdmin && userContext.authorizedCampusIds && userContext.authorizedCampusIds.length > 0) {
           params.push(userContext.authorizedCampusIds);
           q += ` AND (c.campus_id = ANY($1) OR ca.campus_id = ANY($1))`;
         }
-        q += ` ORDER BY u.display_name ASC`;
+        q += ` ORDER BY u.id, u.display_name ASC`;
 
         const res = await db.query(q, params);
         data = res.rows.map(t => ({

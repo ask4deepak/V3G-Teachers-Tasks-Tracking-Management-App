@@ -713,7 +713,7 @@ router.put('/masters/:id', auth.requirePermission('masters.edit'), async (req, r
 
 router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
   try {
-    const { user_type = 'TEACHER', campus_id, department_id, designation_id, subject_id, category_id, status, search } = req.query;
+    const { user_type, campus_id, department_id, designation_id, subject_id, category_id, status, search } = req.query;
 
     let users = [];
     if (db.isMemoryFallback()) {
@@ -723,19 +723,25 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
         if (status && u.status !== status) return false;
         if (search) {
           const s = search.toLowerCase();
-          const match = u.display_name.toLowerCase().includes(s) || u.email.toLowerCase().includes(s) || (u.employee_code && u.employee_code.toLowerCase().includes(s));
+          const match = (u.display_name || '').toLowerCase().includes(s) || (u.email || '').toLowerCase().includes(s) || (u.employee_code && u.employee_code.toLowerCase().includes(s));
           if (!match) return false;
         }
         return true;
       });
 
-      // Filter by campus and attributes
+      // Map campus from user_attributes or user_access
       users = users.map(u => {
         const attrs = store.user_attributes.filter(a => a.user_id === u.id);
-        const camp = attrs[0] ? store.campuses.find(c => c.id === attrs[0].campus_id) : null;
+        let camp = null;
+        const attrWithCamp = attrs.find(a => a.campus_id);
+        if (attrWithCamp) camp = store.campuses.find(c => c.id === attrWithCamp.campus_id);
+        if (!camp) {
+          const acc = store.user_access.find(a => a.user_id === u.id && a.campus_id);
+          if (acc) camp = store.campuses.find(c => c.id === acc.campus_id);
+        }
         return {
           ...auth.sanitizeUser(u),
-          campus_name: camp ? camp.name : 'Unassigned',
+          campus_name: camp ? camp.name : '',
           campus_id: camp ? camp.id : null,
           attributes: attrs
         };
@@ -749,11 +755,17 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
       }
     } else {
       let q = `
-        SELECT DISTINCT u.id, u.email, u.user_type, u.employee_code, u.first_name, u.last_name, u.display_name, u.phone, u.status, u.class_teacher_status, u.created_at,
-        c.id as campus_id, c.name as campus_name
+        SELECT DISTINCT ON (u.id)
+          u.id, u.email, u.user_type, u.employee_code, u.first_name, u.last_name, u.display_name, u.phone, u.status, u.class_teacher_status, u.created_at,
+          COALESCE(c_attr.id, c_acc.id) as campus_id,
+          COALESCE(c_attr.name, c_acc.name, '') as campus_name
         FROM users u
-        LEFT JOIN user_attributes ua ON u.id = ua.user_id
-        LEFT JOIN campuses c ON ua.campus_id = c.id
+        LEFT JOIN LATERAL (
+          SELECT c1.id, c1.name FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id AND ua1.campus_id IS NOT NULL LIMIT 1
+        ) c_attr ON true
+        LEFT JOIN LATERAL (
+          SELECT c2.id, c2.name FROM user_access acc2 JOIN campuses c2 ON acc2.campus_id = c2.id WHERE acc2.user_id = u.id AND acc2.campus_id IS NOT NULL LIMIT 1
+        ) c_acc ON true
         WHERE 1=1
       `;
       const p = [];
@@ -768,18 +780,18 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
       }
       if (!req.user.isSuperAdmin) {
         p.push(req.user.authorizedCampusIds || []);
-        q += ` AND (ua.campus_id = ANY($${p.length}) OR u.user_type = 'SUPER_ADMIN')`;
+        q += ` AND (COALESCE(c_attr.id, c_acc.id) = ANY($${p.length}) OR u.user_type = 'SUPER_ADMIN')`;
       }
       if (campus_id) {
         p.push(campus_id);
-        q += ` AND ua.campus_id = $${p.length}`;
+        q += ` AND COALESCE(c_attr.id, c_acc.id) = $${p.length}`;
       }
       if (search) {
         p.push(`%${search}%`);
         q += ` AND (u.display_name ILIKE $${p.length} OR u.email ILIKE $${p.length} OR u.employee_code ILIKE $${p.length})`;
       }
 
-      q += ' ORDER BY u.display_name ASC';
+      q += ' ORDER BY u.id, u.display_name ASC';
       const result = await db.query(q, p);
       users = result.rows;
     }
@@ -829,8 +841,19 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
         updated_at: now
       });
 
-      // Attributes
       if (campus_id) {
+        const teacherRole = store.roles.find(r => r.name.toUpperCase().includes('TEACHER')) || store.roles[0];
+        if (teacherRole) {
+          store.user_access.push({
+            id: uuidv4(),
+            user_id: userId,
+            role_id: teacherRole.id,
+            campus_id,
+            permission_overrides: null,
+            created_at: now,
+            updated_at: now
+          });
+        }
         const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
         for (const mid of allMasterIds) {
           store.user_attributes.push({
@@ -851,11 +874,22 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
         `, [userId, email, hash, user_type, employee_code || null, first_name, last_name, displayName, phone || null, Boolean(class_teacher_status)]);
 
         if (campus_id) {
+          const rRes = await client.query("SELECT id FROM roles WHERE name ILIKE '%Teacher%' LIMIT 1");
+          const roleId = rRes.rows[0] ? rRes.rows[0].id : null;
+          if (roleId) {
+            await client.query(`
+              INSERT INTO user_access (id, user_id, role_id, campus_id, created_at, updated_at)
+              VALUES ($1, $2, $3, $4, NOW(), NOW())
+              ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
+            `, [uuidv4(), userId, roleId, campus_id]);
+          }
+
           const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
           for (const mid of allMasterIds) {
             await client.query(`
               INSERT INTO user_attributes (id, user_id, campus_id, master_value_id, created_by)
               VALUES ($1, $2, $3, $4, $5)
+              ON CONFLICT (user_id, campus_id, master_value_id) DO NOTHING
             `, [uuidv4(), userId, campus_id, mid, req.user.id]);
           }
         }
@@ -888,8 +922,35 @@ router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) 
       const store = db.getMemoryStore();
       user = store.users.find(u => u.id === userId);
       userAttributes = store.user_attributes.filter(a => a.user_id === userId);
+      if (user) {
+        let camp = null;
+        const attrWithCamp = userAttributes.find(a => a.campus_id);
+        if (attrWithCamp) camp = store.campuses.find(c => c.id === attrWithCamp.campus_id);
+        if (!camp) {
+          const acc = store.user_access.find(a => a.user_id === userId && a.campus_id);
+          if (acc) camp = store.campuses.find(c => c.id === acc.campus_id);
+        }
+        user = {
+          ...user,
+          campus_id: camp ? camp.id : null,
+          campus_name: camp ? camp.name : ''
+        };
+      }
     } else {
-      const uRes = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+      const uRes = await db.query(`
+        SELECT 
+          u.id, u.email, u.user_type, u.employee_code, u.first_name, u.last_name, u.display_name, u.phone, u.status, u.class_teacher_status, u.created_at,
+          COALESCE(c_attr.id, c_acc.id) as campus_id,
+          COALESCE(c_attr.name, c_acc.name, '') as campus_name
+        FROM users u
+        LEFT JOIN LATERAL (
+          SELECT c1.id, c1.name FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id AND ua1.campus_id IS NOT NULL LIMIT 1
+        ) c_attr ON true
+        LEFT JOIN LATERAL (
+          SELECT c2.id, c2.name FROM user_access acc2 JOIN campuses c2 ON acc2.campus_id = c2.id WHERE acc2.user_id = u.id AND acc2.campus_id IS NOT NULL LIMIT 1
+        ) c_acc ON true
+        WHERE u.id = $1
+      `, [userId]);
       user = uRes.rows[0];
 
       const aRes = await db.query(`
@@ -945,6 +1006,25 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
       }
 
       if (campus_id) {
+        let access = store.user_access.find(a => a.user_id === userId);
+        if (access) {
+          access.campus_id = campus_id;
+          access.updated_at = now;
+        } else {
+          const teacherRole = store.roles.find(r => r.name.toUpperCase().includes('TEACHER')) || store.roles[0];
+          if (teacherRole) {
+            store.user_access.push({
+              id: uuidv4(),
+              user_id: userId,
+              role_id: teacherRole.id,
+              campus_id,
+              permission_overrides: null,
+              created_at: now,
+              updated_at: now
+            });
+          }
+        }
+
         store.user_attributes = store.user_attributes.filter(a => a.user_id !== userId);
         const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
         for (const mid of allMasterIds) {
@@ -974,6 +1054,21 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
         }
 
         if (campus_id) {
+          const uaCheck = await client.query('SELECT id FROM user_access WHERE user_id = $1', [userId]);
+          if (uaCheck.rows.length > 0) {
+            await client.query('UPDATE user_access SET campus_id = $1, updated_at = NOW() WHERE user_id = $2', [campus_id, userId]);
+          } else {
+            const rRes = await client.query("SELECT id FROM roles WHERE name ILIKE '%Teacher%' LIMIT 1");
+            const roleId = rRes.rows[0] ? rRes.rows[0].id : null;
+            if (roleId) {
+              await client.query(`
+                INSERT INTO user_access (id, user_id, role_id, campus_id, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, NOW(), NOW())
+                ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
+              `, [uuidv4(), userId, roleId, campus_id]);
+            }
+          }
+
           await client.query('DELETE FROM user_attributes WHERE user_id = $1', [userId]);
           const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
           for (const mid of allMasterIds) {

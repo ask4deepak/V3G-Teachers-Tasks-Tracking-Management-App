@@ -3147,7 +3147,7 @@ async function renderUsersDirectory(container) {
                   <td>${escapeHtml(u.email)}</td>
                   <td><code>${escapeHtml(u.employee_code || 'N/A')}</code></td>
                   <td><span class="badge ${u.user_type === 'SUPER_ADMIN' ? 'badge-overdue' : (u.user_type === 'ADMIN' ? 'badge-in-progress' : 'badge-not-started')}">${u.user_type}</span></td>
-                  <td>${escapeHtml(u.campus_name)}</td>
+                  <td>${u.campus_name ? escapeHtml(u.campus_name) : '<span class="text-muted">Unassigned</span>'}</td>
                   <td>${u.class_teacher_status ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>
                   <td><span class="badge badge-${(u.status || 'ACTIVE').toLowerCase()}">${u.status || 'ACTIVE'}</span></td>
                   <td>
@@ -3245,6 +3245,7 @@ async function openEditUserModal(userId) {
           <div class="form-group">
             <label>Primary Campus <span class="text-danger">*</span></label>
             <select name="campus_id" class="form-select" required>
+              <option value="">Select Primary Campus...</option>
               ${campuses.map(c => `<option value="${c.id}" ${c.id === user.campus_id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
             </select>
           </div>
@@ -3518,6 +3519,7 @@ async function openCreateUserModal() {
         <div class="form-group">
           <label>Primary Campus <span class="text-danger">*</span></label>
           <select name="campus_id" class="form-select" required>
+            <option value="">Select Primary Campus...</option>
             ${campuses.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
           </select>
         </div>
