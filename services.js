@@ -537,17 +537,54 @@ async function processRecurringTasks() {
 // ============================================================================
 
 let emailTransporter = null;
+let lastTransporterConfigKey = null;
+
+function resetEmailTransporter() {
+  emailTransporter = null;
+  lastTransporterConfigKey = null;
+}
 
 function getEmailTransporter() {
-  if (!emailTransporter) {
-    const smtpHost = (process.env.SMTP_HOST || '').trim();
-    const smtpUser = (process.env.SMTP_USER || '').trim();
-    const smtpPass = (process.env.SMTP_PASS || '').trim().replace(/\s+/g, ''); // Strip spaces in Google App Passwords
-    const smtpPort = parseInt(process.env.SMTP_PORT || (smtpHost.includes('gmail') ? '465' : '587'), 10);
-    const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+  const smtpHost = (process.env.SMTP_HOST || '').trim();
+  let smtpUser = (process.env.SMTP_USER || '').trim();
+  let smtpPass = (process.env.SMTP_PASS || '').trim();
 
+  // Strip surrounding quotes if present in .env
+  if ((smtpUser.startsWith('"') && smtpUser.endsWith('"')) || (smtpUser.startsWith("'") && smtpUser.endsWith("'"))) {
+    smtpUser = smtpUser.substring(1, smtpUser.length - 1).trim();
+  }
+  if ((smtpPass.startsWith('"') && smtpPass.endsWith('"')) || (smtpPass.startsWith("'") && smtpPass.endsWith("'"))) {
+    smtpPass = smtpPass.substring(1, smtpPass.length - 1).trim();
+  }
+
+  // Strip spaces in Google App Passwords (e.g. "abcd efgh ijkl mnop" -> "abcdefghijklmnop")
+  smtpPass = smtpPass.replace(/\s+/g, '');
+
+  const isGmail = smtpHost.includes('gmail') || smtpHost.includes('googlemail') || smtpUser.endsWith('@gmail.com');
+  const rawPort = process.env.SMTP_PORT;
+  const smtpPort = parseInt(rawPort || (isGmail ? '465' : '587'), 10);
+
+  let smtpSecure;
+  if (process.env.SMTP_SECURE !== undefined && process.env.SMTP_SECURE !== '') {
+    smtpSecure = process.env.SMTP_SECURE === 'true';
+  } else {
+    smtpSecure = (smtpPort === 465);
+  }
+
+  // Port 587 uses STARTTLS (secure: false). If someone passed secure=true on 587, fix it to prevent TLS socket hang
+  if (smtpPort === 587 && smtpSecure === true) {
+    smtpSecure = false;
+  }
+  // Port 465 requires SSL (secure: true).
+  if (smtpPort === 465 && smtpSecure === false) {
+    smtpSecure = true;
+  }
+
+  const currentConfigKey = `${smtpHost}:${smtpUser}:${smtpPass}:${smtpPort}:${smtpSecure}`;
+
+  if (!emailTransporter || lastTransporterConfigKey !== currentConfigKey) {
     if (smtpHost && smtpUser && smtpPass) {
-      emailTransporter = nodemailer.createTransport({
+      const transportOptions = {
         host: smtpHost,
         port: smtpPort,
         secure: smtpSecure,
@@ -558,7 +595,11 @@ function getEmailTransporter() {
         tls: {
           rejectUnauthorized: false
         }
-      });
+      };
+
+      emailTransporter = nodemailer.createTransport(transportOptions);
+      emailTransporter.isMock = false;
+      lastTransporterConfigKey = currentConfigKey;
       console.log(`[Email Service] Configured SMTP Transport for ${smtpUser} via ${smtpHost}:${smtpPort} (secure: ${smtpSecure})`);
     } else {
       // Mock transporter for development/unconfigured states
@@ -566,9 +607,11 @@ function getEmailTransporter() {
         sendMail: async (options) => {
           console.log(`[Email Mock Dispatch] TO: ${options.to} | SUBJECT: ${options.subject}`);
           return { messageId: `mock-${Date.now()}` };
-        }
+        },
+        isMock: true
       };
-      console.log(`[Email Service] SMTP credentials not set; using local console mock.`);
+      lastTransporterConfigKey = currentConfigKey;
+      console.log(`[Email Service] SMTP credentials not set or incomplete; using local console mock.`);
     }
   }
   return emailTransporter;
@@ -597,12 +640,12 @@ async function sendTestEmail(toEmail) {
     `
   });
 
-  return info;
+  return { ...info, isMock: !!transporter.isMock };
 }
 
 async function sendTaskAssignedEmail(teacher, task, deadline) {
   const transporter = getEmailTransporter();
-  const from = process.env.EMAIL_FROM || 'tasks@institution.edu';
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
   const deadlineStr = new Date(deadline).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -633,7 +676,7 @@ async function sendTaskAssignedEmail(teacher, task, deadline) {
 
 async function sendTaskReminderEmail(teacher, task, deadline) {
   const transporter = getEmailTransporter();
-  const from = process.env.EMAIL_FROM || 'tasks@institution.edu';
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
   const deadlineStr = new Date(deadline).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -661,7 +704,7 @@ async function sendTaskReminderEmail(teacher, task, deadline) {
 
 async function sendGroupJoinRequestEmail(approvers, applicant, group, campusName) {
   const transporter = getEmailTransporter();
-  const from = process.env.EMAIL_FROM || 'tasks@institution.edu';
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
 
   for (const approver of approvers) {
@@ -687,7 +730,7 @@ async function sendGroupJoinRequestEmail(approvers, applicant, group, campusName
 
 async function sendGroupDecisionEmail(applicant, group, status, reviewNotes = '') {
   const transporter = getEmailTransporter();
-  const from = process.env.EMAIL_FROM || 'tasks@institution.edu';
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const isApproved = status === 'APPROVED';
 
   return transporter.sendMail({
@@ -942,6 +985,7 @@ module.exports = {
   sendGroupJoinRequestEmail,
   sendGroupDecisionEmail,
   sendTestEmail,
+  resetEmailTransporter,
   logAudit,
   generateTaskResponseWorkbook,
   generateImportTemplate,

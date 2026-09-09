@@ -102,14 +102,29 @@ function escapeHtml(str) {
 }
 
 function openModal(htmlContent) {
-  elements.modalContent.innerHTML = htmlContent;
-  elements.modalContainer.classList.remove('hidden');
+  const container = elements.modalContainer || document.getElementById('modal-container');
+  const content = elements.modalContent || document.getElementById('modal-content');
+  if (content && container) {
+    content.innerHTML = htmlContent;
+    container.classList.remove('hidden');
+    container.style.display = 'flex';
+  }
 }
 
 function closeModal() {
-  elements.modalContainer.classList.add('hidden');
-  elements.modalContent.innerHTML = '';
+  const container = elements.modalContainer || document.getElementById('modal-container');
+  const content = elements.modalContent || document.getElementById('modal-content');
+  if (container) {
+    container.classList.add('hidden');
+    container.style.display = 'none';
+  }
+  if (content) {
+    content.innerHTML = '';
+  }
 }
+
+window.openModal = openModal;
+window.closeModal = closeModal;
 
 // ============================================================================
 // 3. AUTHENTICATION & SESSION MANAGEMENT
@@ -1380,7 +1395,7 @@ async function renderAdminDashboard(container) {
         <div class="date-filter-control hide-sm">
           <input type="date" value="${todayDateString}" id="admin-dashboard-date-filter" />
         </div>
-        ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN') ? `
+        ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN' || state.user.user_type === 'ADMIN') ? `
           <button class="btn btn-secondary btn-sm" onclick="openTestEmailModal()">
             <i class="fa-solid fa-paper-plane"></i> <span class="hide-sm">Test SMTP</span>
           </button>
@@ -5272,9 +5287,9 @@ function formatStatus(status) {
   }
 }
 
-// SMTP Test Email Modal for Super Admins
+// SMTP Test Email Modal for Super Admins & Admins
 function openTestEmailModal() {
-  showModal(`
+  openModal(`
     <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
       <h2><i class="fa-solid fa-envelope-circle-check text-primary"></i> Test SMTP Email Configuration</h2>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
@@ -5286,7 +5301,7 @@ function openTestEmailModal() {
       <form onsubmit="handleSendTestEmail(event)">
         <div class="form-group">
           <label>Recipient Test Email Address <span class="text-danger">*</span></label>
-          <input type="email" name="to_email" class="form-input" value="${escapeHtml(state.user ? state.user.email : '')}" required placeholder="e.g. ask4deepak@gmail.com" />
+          <input type="email" name="to_email" class="form-input" value="${escapeHtml(state.user ? state.user.email : '')}" required placeholder="e.g. contact@srbps.com" />
         </div>
         <div id="test-email-result" style="margin-top:12px; display:none;"></div>
         <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px;">
@@ -5299,6 +5314,9 @@ function openTestEmailModal() {
     </div>
   `);
 }
+
+window.openTestEmailModal = openTestEmailModal;
+window.handleSendTestEmail = handleSendTestEmail;
 
 async function handleSendTestEmail(event) {
   event.preventDefault();
@@ -5328,7 +5346,10 @@ async function handleSendTestEmail(event) {
       <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b; padding:12px; border-radius:6px; font-size:0.9rem;">
         <i class="fa-solid fa-circle-exclamation"></i> <strong>SMTP Notice / Error:</strong> ${escapeHtml(err.message)}
         <div style="font-size:0.8rem; margin-top:6px; color:#b91c1c;">
-          Ensure 2-Step Verification is active on your Google account and you have generated a 16-character App Password entered in Railway environment variables.
+          For Google Workspace (e.g. <code>contact@srbps.com</code>):<br/>
+          1. Enable 2-Step Verification on <code>contact@srbps.com</code>.<br/>
+          2. Generate a 16-character App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#b91c1c; text-decoration:underline;">myaccount.google.com/apppasswords</a>.<br/>
+          3. Use <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_PORT=465</code>, and enter the 16-character App Password into <code>SMTP_PASS</code> in Railway / <code>.env</code>.
         </div>
       </div>
     `;

@@ -3408,8 +3408,8 @@ router.get('/audit-logs', auth.requirePermission('audit.view'), async (req, res)
 
 router.post('/admin/test-email', auth.requireAuth, async (req, res) => {
   try {
-    if (!req.user.isSuperAdmin && req.user.user_type !== 'SUPER_ADMIN') {
-      return res.status(403).json({ error: 'Only Super Administrators can perform SMTP verification.' });
+    if (!req.user.isSuperAdmin && req.user.user_type !== 'SUPER_ADMIN' && req.user.user_type !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only Administrators can perform SMTP verification.' });
     }
 
     const targetEmail = req.body.to_email || req.user.email;
@@ -3417,6 +3417,12 @@ router.post('/admin/test-email', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Target email address is required.' });
     }
 
+    // Force reloading dotenv file if edited locally
+    try {
+      require('dotenv').config({ override: true });
+    } catch (_) {}
+
+    services.resetEmailTransporter();
     const info = await services.sendTestEmail(targetEmail);
 
     await services.logAudit({
@@ -3429,20 +3435,27 @@ router.post('/admin/test-email', auth.requireAuth, async (req, res) => {
       ipAddress: req.ip
     });
 
+    if (info && info.isMock) {
+      return res.status(400).json({
+        error: `SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) are missing or incomplete in your server environment. Mail was dispatched to local console mock.`,
+        hint: 'Set SMTP_HOST=smtp.gmail.com, SMTP_USER=your-email@gmail.com, SMTP_PASS=your-16-char-app-password in environment variables or .env file and restart server.'
+      });
+    }
+
     res.json({
       success: true,
       message: `Test email successfully sent to ${targetEmail}`,
       details: {
         messageId: info.messageId,
-        smtp_user: process.env.SMTP_USER || '(Not configured - mock used)',
-        smtp_host: process.env.SMTP_HOST || '(Not configured - mock used)'
+        smtp_user: process.env.SMTP_USER,
+        smtp_host: process.env.SMTP_HOST
       }
     });
   } catch (err) {
     console.error('[SMTP Test Error]:', err);
     res.status(500).json({
       error: `Failed to send test email: ${err.message}`,
-      hint: 'For Gmail/Google Workspace: Ensure 2-Step Verification is ON, use an App Password (not your normal password), and verify SMTP_USER matches your account.'
+      hint: 'For Gmail / Google Workspace: 1. Enable 2-Step Verification on your account. 2. Generate a 16-character App Password at https://myaccount.google.com/apppasswords. 3. Enter the 16-char App Password into SMTP_PASS (not your login password).'
     });
   }
 });
