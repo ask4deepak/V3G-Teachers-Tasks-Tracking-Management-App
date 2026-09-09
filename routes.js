@@ -757,9 +757,10 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
       let q = `
         SELECT DISTINCT ON (u.id)
           u.id, u.email, u.user_type, u.employee_code, u.first_name, u.last_name, u.display_name, u.phone, u.status, u.class_teacher_status, u.created_at,
-          COALESCE(c_attr.id, c_acc.id) as campus_id,
-          COALESCE(c_attr.name, c_acc.name, '') as campus_name
+          COALESCE(u.campus_id, c_attr.id, c_acc.id) as campus_id,
+          COALESCE(c_direct.name, c_attr.name, c_acc.name, '') as campus_name
         FROM users u
+        LEFT JOIN campuses c_direct ON u.campus_id = c_direct.id
         LEFT JOIN LATERAL (
           SELECT c1.id, c1.name FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id AND ua1.campus_id IS NOT NULL LIMIT 1
         ) c_attr ON true
@@ -780,11 +781,11 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
       }
       if (!req.user.isSuperAdmin) {
         p.push(req.user.authorizedCampusIds || []);
-        q += ` AND (COALESCE(c_attr.id, c_acc.id) = ANY($${p.length}) OR u.user_type = 'SUPER_ADMIN')`;
+        q += ` AND (COALESCE(u.campus_id, c_attr.id, c_acc.id) = ANY($${p.length}) OR u.user_type = 'SUPER_ADMIN')`;
       }
       if (campus_id) {
         p.push(campus_id);
-        q += ` AND COALESCE(c_attr.id, c_acc.id) = $${p.length}`;
+        q += ` AND COALESCE(u.campus_id, c_attr.id, c_acc.id) = $${p.length}`;
       }
       if (search) {
         p.push(`%${search}%`);
@@ -836,6 +837,7 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
         phone: phone || null,
         status: 'ACTIVE',
         class_teacher_status: Boolean(class_teacher_status),
+        campus_id: campus_id || null,
         last_login_at: null,
         created_at: now,
         updated_at: now
@@ -869,9 +871,9 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
     } else {
       await db.transaction(async (client) => {
         await client.query(`
-          INSERT INTO users (id, email, password_hash, user_type, employee_code, first_name, last_name, display_name, phone, status, class_teacher_status)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE', $10)
-        `, [userId, email, hash, user_type, employee_code || null, first_name, last_name, displayName, phone || null, Boolean(class_teacher_status)]);
+          INSERT INTO users (id, email, password_hash, user_type, employee_code, first_name, last_name, display_name, phone, status, class_teacher_status, campus_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE', $10, $11)
+        `, [userId, email, hash, user_type, employee_code || null, first_name, last_name, displayName, phone || null, Boolean(class_teacher_status), campus_id || null]);
 
         if (campus_id) {
           const rRes = await client.query("SELECT id FROM roles WHERE name ILIKE '%Teacher%' LIMIT 1");
@@ -924,15 +926,18 @@ router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) 
       userAttributes = store.user_attributes.filter(a => a.user_id === userId);
       if (user) {
         let camp = null;
-        const attrWithCamp = userAttributes.find(a => a.campus_id);
-        if (attrWithCamp) camp = store.campuses.find(c => c.id === attrWithCamp.campus_id);
+        if (user.campus_id) camp = store.campuses.find(c => c.id === user.campus_id);
+        if (!camp) {
+          const attrWithCamp = userAttributes.find(a => a.campus_id);
+          if (attrWithCamp) camp = store.campuses.find(c => c.id === attrWithCamp.campus_id);
+        }
         if (!camp) {
           const acc = store.user_access.find(a => a.user_id === userId && a.campus_id);
           if (acc) camp = store.campuses.find(c => c.id === acc.campus_id);
         }
         user = {
           ...user,
-          campus_id: camp ? camp.id : null,
+          campus_id: camp ? camp.id : (user.campus_id || null),
           campus_name: camp ? camp.name : ''
         };
       }
@@ -940,9 +945,10 @@ router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) 
       const uRes = await db.query(`
         SELECT 
           u.id, u.email, u.user_type, u.employee_code, u.first_name, u.last_name, u.display_name, u.phone, u.status, u.class_teacher_status, u.created_at,
-          COALESCE(c_attr.id, c_acc.id) as campus_id,
-          COALESCE(c_attr.name, c_acc.name, '') as campus_name
+          COALESCE(u.campus_id, c_attr.id, c_acc.id) as campus_id,
+          COALESCE(c_direct.name, c_attr.name, c_acc.name, '') as campus_name
         FROM users u
+        LEFT JOIN campuses c_direct ON u.campus_id = c_direct.id
         LEFT JOIN LATERAL (
           SELECT c1.id, c1.name FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id AND ua1.campus_id IS NOT NULL LIMIT 1
         ) c_attr ON true
@@ -999,6 +1005,7 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
       user.phone = phone || null;
       user.status = status;
       user.class_teacher_status = Boolean(class_teacher_status);
+      if (campus_id !== undefined) user.campus_id = campus_id || null;
       user.updated_at = now;
 
       if (password) {
@@ -1043,14 +1050,14 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
         if (password) {
           const hash = await bcrypt.hash(password, 10);
           await client.query(`
-            UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, password_hash = $8, updated_at = NOW()
-            WHERE id = $9
-          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), hash, userId]);
+            UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, campus_id = $8, password_hash = $9, updated_at = NOW()
+            WHERE id = $10
+          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), campus_id || null, hash, userId]);
         } else {
           await client.query(`
-            UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, updated_at = NOW()
-            WHERE id = $8
-          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), userId]);
+            UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, campus_id = $8, updated_at = NOW()
+            WHERE id = $9
+          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), campus_id || null, userId]);
         }
 
         if (campus_id) {
@@ -2897,6 +2904,7 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
           if (phone) existingUser.phone = phone;
           existingUser.status = status;
           existingUser.class_teacher_status = classTeacher;
+          if (campus) existingUser.campus_id = campus.id;
           if (row['Password (Optional)'] || row['Password']) {
             existingUser.password_hash = passwordHash;
           }
@@ -2948,6 +2956,7 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
             phone,
             status,
             class_teacher_status: classTeacher,
+            campus_id: campus ? campus.id : null,
             created_at: now,
             updated_at: now
           };
@@ -2987,14 +2996,14 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
             userId = uRes.rows[0].id;
             if (row['Password (Optional)'] || row['Password']) {
               await client.query(`
-                UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = COALESCE($4, employee_code), phone = COALESCE($5, phone), status = $6, class_teacher_status = $7, password_hash = $8, updated_at = NOW()
-                WHERE id = $9
-              `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, passwordHash, userId]);
+                UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = COALESCE($4, employee_code), phone = COALESCE($5, phone), status = $6, class_teacher_status = $7, campus_id = COALESCE($8, campus_id), password_hash = $9, updated_at = NOW()
+                WHERE id = $10
+              `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, campus ? campus.id : null, passwordHash, userId]);
             } else {
               await client.query(`
-                UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = COALESCE($4, employee_code), phone = COALESCE($5, phone), status = $6, class_teacher_status = $7, updated_at = NOW()
-                WHERE id = $8
-              `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, userId]);
+                UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = COALESCE($4, employee_code), phone = COALESCE($5, phone), status = $6, class_teacher_status = $7, campus_id = COALESCE($8, campus_id), updated_at = NOW()
+                WHERE id = $9
+              `, [firstName, lastName, displayName, employeeCode, phone, status, classTeacher, campus ? campus.id : null, userId]);
             }
 
             if (campus) {
@@ -3014,9 +3023,9 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
           } else {
             userId = uuidv4();
             await client.query(`
-              INSERT INTO users (id, user_type, email, password_hash, first_name, last_name, display_name, employee_code, phone, status, class_teacher_status, created_at, updated_at)
-              VALUES ($1, 'TEACHER', $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-            `, [userId, email, passwordHash, firstName, lastName, displayName, employeeCode, phone, status, classTeacher]);
+              INSERT INTO users (id, user_type, email, password_hash, first_name, last_name, display_name, employee_code, phone, status, class_teacher_status, campus_id, created_at, updated_at)
+              VALUES ($1, 'TEACHER', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+            `, [userId, email, passwordHash, firstName, lastName, displayName, employeeCode, phone, status, classTeacher, campus ? campus.id : null]);
 
             if (campus && teacherRole) {
               await client.query(`

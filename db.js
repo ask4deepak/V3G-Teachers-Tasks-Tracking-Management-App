@@ -185,9 +185,18 @@ async function initDb() {
 
       // Run any incremental alter migrations
       await pool.query(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS campus_id UUID REFERENCES campuses(id) ON DELETE SET NULL;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_edit_submission BOOLEAN NOT NULL DEFAULT FALSE;
+
+        -- Backfill users.campus_id if unpopulated
+        UPDATE users u
+        SET campus_id = COALESCE(
+          (SELECT ua.campus_id FROM user_attributes ua WHERE ua.user_id = u.id AND ua.campus_id IS NOT NULL LIMIT 1),
+          (SELECT acc.campus_id FROM user_access acc WHERE acc.user_id = u.id AND acc.campus_id IS NOT NULL LIMIT 1)
+        )
+        WHERE u.campus_id IS NULL;
       `);
 
       // Execute seed.sql
