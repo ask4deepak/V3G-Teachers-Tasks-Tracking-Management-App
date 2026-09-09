@@ -639,6 +639,33 @@ function getEmailTransporter() {
 }
 
 async function dispatchMail(mailOptions) {
+  // 1. Resend HTTP API Delivery Strategy (Bypasses all cloud firewall SMTP port blocks)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const resendRes = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: mailOptions.from,
+          to: [mailOptions.to],
+          subject: mailOptions.subject,
+          html: mailOptions.html
+        })
+      });
+      const data = await resendRes.json();
+      if (!resendRes.ok) {
+        throw new Error(data.message || 'Resend API delivery failed');
+      }
+      return { messageId: data.id, isMock: false, strategy: 'Resend HTTP API' };
+    } catch (err) {
+      console.error('[Email Service] Resend API error:', err.message);
+      throw err;
+    }
+  }
+
   const transporter = getEmailTransporter();
   if (transporter.isMock) {
     const res = await transporter.sendMail(mailOptions);
@@ -692,6 +719,21 @@ async function dispatchMail(mailOptions) {
 }
 
 async function sendTestEmail(toEmail) {
+  if (process.env.RESEND_API_KEY) {
+    const from = process.env.EMAIL_FROM || 'onboarding@resend.dev';
+    return dispatchMail({
+      from,
+      to: toEmail,
+      subject: 'TaskTrack Pro: Resend HTTP API Email Delivery Verified',
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #22c55e; border-radius: 8px;">
+          <h2 style="color: #16a34a; margin-top: 0;">🎉 Resend HTTP API Email Delivery Verified!</h2>
+          <p>Congratulations! Your email notification engine is using Resend HTTP API and is fully verified.</p>
+        </div>
+      `
+    });
+  }
+
   const smtpHost = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
   let smtpUser = (process.env.SMTP_USER || '').trim();
   let smtpPass = (process.env.SMTP_PASS || '').trim();
