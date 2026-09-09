@@ -639,12 +639,64 @@ function getEmailTransporter() {
   return emailTransporter;
 }
 
-async function sendTestEmail(toEmail) {
+async function dispatchMail(mailOptions) {
   const transporter = getEmailTransporter();
+  if (transporter.isMock) {
+    const res = await transporter.sendMail(mailOptions);
+    return { ...res, isMock: true };
+  }
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    return { ...info, isMock: false };
+  } catch (err) {
+    const smtpHost = (process.env.SMTP_HOST || '').trim();
+    let smtpUser = (process.env.SMTP_USER || '').trim();
+    let smtpPass = (process.env.SMTP_PASS || '').trim();
+
+    if ((smtpPass.startsWith('"') && smtpPass.endsWith('"')) || (smtpPass.startsWith("'") && smtpPass.endsWith("'"))) {
+      smtpPass = smtpPass.substring(1, smtpPass.length - 1).trim();
+    }
+    smtpPass = smtpPass.replace(/\s+/g, '');
+
+    const errStr = (err.message || '') + ' ' + (err.code || '');
+    const isTimeout = err.code === 'ETIMEDOUT' || err.code === 'ESOCKET' || errStr.toLowerCase().includes('timeout');
+    const isGmail = smtpHost.includes('gmail') || smtpUser.endsWith('@gmail.com') || smtpHost === 'smtp.gmail.com';
+
+    if (isTimeout && isGmail) {
+      console.warn(`[Email Service] Primary transport timed out (${err.message}). Attempting fallback to STARTTLS smtp.gmail.com:587...`);
+      try {
+        const fallbackTransporter = nodemailer.createTransport({
+          host: 'smtp.gmail.com',
+          port: 587,
+          secure: false, // STARTTLS
+          auth: {
+            user: smtpUser,
+            pass: smtpPass
+          },
+          tls: {
+            rejectUnauthorized: false
+          },
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 12000
+        });
+        const info = await fallbackTransporter.sendMail(mailOptions);
+        return { ...info, isMock: false };
+      } catch (fallbackErr) {
+        console.error(`[Email Service] Fallback STARTTLS transport failed:`, fallbackErr.message);
+        throw fallbackErr;
+      }
+    }
+    throw err;
+  }
+}
+
+async function sendTestEmail(toEmail) {
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const timestamp = new Date().toLocaleString();
 
-  const info = await transporter.sendMail({
+  return dispatchMail({
     from,
     to: toEmail,
     subject: 'TaskTrack Pro: Gmail / Workspace SMTP Configuration Verified',
@@ -661,17 +713,14 @@ async function sendTestEmail(toEmail) {
       </div>
     `
   });
-
-  return { ...info, isMock: !!transporter.isMock };
 }
 
 async function sendTaskAssignedEmail(teacher, task, deadline) {
-  const transporter = getEmailTransporter();
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
   const deadlineStr = new Date(deadline).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 
-  return transporter.sendMail({
+  return dispatchMail({
     from,
     to: teacher.email,
     subject: `New Task Assigned: ${task.title}`,
@@ -697,12 +746,11 @@ async function sendTaskAssignedEmail(teacher, task, deadline) {
 }
 
 async function sendTaskReminderEmail(teacher, task, deadline) {
-  const transporter = getEmailTransporter();
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
   const deadlineStr = new Date(deadline).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 
-  return transporter.sendMail({
+  return dispatchMail({
     from,
     to: teacher.email,
     subject: `REMINDER: Pending Task - ${task.title}`,
@@ -725,14 +773,13 @@ async function sendTaskReminderEmail(teacher, task, deadline) {
 }
 
 async function sendGroupJoinRequestEmail(approvers, applicant, group, campusName) {
-  const transporter = getEmailTransporter();
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
 
   for (const approver of approvers) {
     if (!approver.email) continue;
     try {
-      await transporter.sendMail({
+      await dispatchMail({
         from,
         to: approver.email,
         subject: `Group Joining Request: ${group.name}`,
@@ -751,11 +798,10 @@ async function sendGroupJoinRequestEmail(approvers, applicant, group, campusName
 }
 
 async function sendGroupDecisionEmail(applicant, group, status, reviewNotes = '') {
-  const transporter = getEmailTransporter();
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const isApproved = status === 'APPROVED';
 
-  return transporter.sendMail({
+  return dispatchMail({
     from,
     to: applicant.email,
     subject: `Group Request ${isApproved ? 'Approved' : 'Declined'}: ${group.name}`,
