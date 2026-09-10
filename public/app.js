@@ -3846,80 +3846,436 @@ async function renderAdminGroups(container) {
   `;
 }
 
+// Global state for Group Builder
+window._groupBuilderState = {
+  campuses: [],
+  departments: [],
+  designations: [],
+  subjects: [],
+  categories: [],
+  selectedCampusId: '',
+  audienceRules: {
+    departments: [],
+    designations: [],
+    subjects: [],
+    categories: [],
+    class_teacher_status: ''
+  },
+  searchQuery: '',
+  teachers: [],
+  selectedMembers: new Map() // userId -> role ('MEMBER' | 'GROUP_ADMIN')
+};
+
 async function openCreateGroupModal() {
-  const [campuses, teachers] = await Promise.all([
+  const [campuses, depts, desigs, subjs, cats] = await Promise.all([
     api('/campuses'),
-    api('/users?user_type=TEACHER')
+    api('/masters?master_type=DEPARTMENT'),
+    api('/masters?master_type=DESIGNATION'),
+    api('/masters?master_type=SUBJECT'),
+    api('/masters?master_type=CATEGORY')
   ]);
+
+  const activeCampuses = (campuses || []).filter(c => c.status === 'ACTIVE');
+  const initialCampusId = activeCampuses.length > 0 ? activeCampuses[0].id : '';
+
+  window._groupBuilderState = {
+    campuses: activeCampuses,
+    departments: depts || [],
+    designations: desigs || [],
+    subjects: subjs || [],
+    categories: cats || [],
+    selectedCampusId: initialCampusId,
+    audienceRules: {
+      departments: [],
+      designations: [],
+      subjects: [],
+      categories: [],
+      class_teacher_status: ''
+    },
+    searchQuery: '',
+    teachers: [],
+    selectedMembers: new Map()
+  };
 
   const html = `
     <div class="card-header">
-      <h3>Create Faculty Group</h3>
+      <div>
+        <h3><i class="fa-solid fa-users-rectangle text-primary"></i> Create Faculty Group</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Target campus teachers, filter by department/designation/subjects, and assign members</span>
+      </div>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
     </div>
-    <div class="card-body">
-      <form id="form-create-group" onsubmit="handleCreateGroup(event)">
-        <div class="form-group">
-          <label>Group Name <span class="text-danger">*</span></label>
-          <input type="text" name="name" class="form-input" required placeholder="e.g. Science Faculty Forum" />
-        </div>
-        <div class="form-group">
-          <label>Description</label>
-          <textarea name="description" class="form-textarea" placeholder="Group purpose..."></textarea>
-        </div>
-        <div class="form-group">
-          <label>Campus <span class="text-danger">*</span></label>
-          <select name="campus_id" id="group-campus-select" class="form-select" required>
-            ${campuses.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" name="allow_join_requests" value="true" checked />
-            Allow Teachers to Request Membership
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>Bulk Initial Members (Optional)</label>
-          <div style="max-height: 150px; overflow-y:auto; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md);">
-            ${teachers.map(t => `
-              <label class="checkbox-label" style="margin-bottom:6px;">
-                <input type="checkbox" name="member_ids" value="${t.id}" />
-                ${escapeHtml(t.display_name)} (${escapeHtml(t.email)})
-              </label>
-            `).join('')}
+    <div class="card-body" style="max-height: 80vh; overflow-y: auto;">
+      <form id="form-create-group" onsubmit="handleCreateGroupWithFilters(event)">
+        
+        <!-- Step 1: Basic Information & Campus -->
+        <div style="background:var(--border-subtle); padding:16px; border-radius:var(--radius-md); margin-bottom:18px;">
+          <h4 style="margin:0 0 12px; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-info-circle text-primary"></i> 1. Group Details & Campus</h4>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Group Name <span class="text-danger">*</span></label>
+              <input type="text" name="name" class="form-input" required placeholder="e.g. Science Faculty Forum" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Target Campus <span class="text-danger">*</span></label>
+              <select name="campus_id" id="gb-campus-select" class="form-select" required onchange="handleGroupBuilderCampusChange(this.value)">
+                ${activeCampuses.map(c => `<option value="${c.id}" ${c.id === initialCampusId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:12px; margin-bottom:0;">
+            <label>Description</label>
+            <textarea name="description" class="form-textarea" rows="2" placeholder="State the purpose or goals of this group..."></textarea>
+          </div>
+          <div class="form-group" style="margin-top:10px; margin-bottom:0;">
+            <label class="checkbox-label">
+              <input type="checkbox" name="allow_join_requests" value="true" checked />
+              Allow campus teachers to discover and request to join this group
+            </label>
           </div>
         </div>
 
-        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
-          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button type="submit" class="btn btn-primary">Create Group</button>
+        <!-- Step 2: Audience Filter Rules (Optional like Task Builder) -->
+        <div style="border:1px solid var(--border-color); padding:16px; border-radius:var(--radius-md); margin-bottom:18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-filter text-primary"></i> 2. Target Audience Criteria Filters</h4>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="resetGroupBuilderFilters()">
+              <i class="fa-solid fa-rotate-left"></i> Reset Filters
+            </button>
+          </div>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:12px;">
+            Filter candidate campus teachers before adding them to this group. Leaving filters empty includes all campus teachers.
+          </p>
+
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:12px;">
+            <div>
+              <label style="font-size:0.8rem; font-weight:600;">Department</label>
+              <select id="gb-filter-dept" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
+                <option value="">All Departments</option>
+                ${(depts || []).map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.8rem; font-weight:600;">Designation</label>
+              <select id="gb-filter-desig" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
+                <option value="">All Designations</option>
+                ${(desigs || []).map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.8rem; font-weight:600;">Subject</label>
+              <select id="gb-filter-subj" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
+                <option value="">All Subjects</option>
+                ${(subjs || []).map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.8rem; font-weight:600;">Category</label>
+              <select id="gb-filter-cat" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
+                <option value="">All Categories</option>
+                ${(cats || []).map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.8rem; font-weight:600;">Class Teacher Status</label>
+              <select id="gb-filter-ct" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
+                <option value="">All (Ignore)</option>
+                <option value="true">Class Teachers Only</option>
+                <option value="false">Non-Class Teachers Only</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Candidate Teachers Selection Roster -->
+        <div style="border:1px solid var(--border-color); padding:16px; border-radius:var(--radius-md);">
+          <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px;">
+            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-users text-primary"></i> 3. Assign Initial Group Members</h4>
+            <div id="gb-counts-badge" style="font-size:0.85rem; font-weight:600; color:var(--primary);">
+              Loading teachers...
+            </div>
+          </div>
+
+          <!-- Toolbar: Search & Bulk Controls -->
+          <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; background:var(--bg-surface); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+            <div class="search-input-wrapper" style="flex:1; min-width:200px;">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <input type="text" id="gb-search-input" class="form-input form-input-sm" placeholder="Search teacher by name, email, or employee code..." oninput="handleGroupBuilderSearch(this.value)" />
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGroupBuilderTeachers(true)">
+                <i class="fa-solid fa-check-double"></i> Select All Filtered
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGroupBuilderTeachers(false)">
+                <i class="fa-solid fa-square-minus"></i> Deselect Filtered
+              </button>
+            </div>
+          </div>
+
+          <!-- Teachers Roster Container -->
+          <div id="gb-teachers-table-container" style="max-height: 280px; overflow-y:auto; border:1px solid var(--border-subtle); border-radius:var(--radius-sm);">
+            <div style="text-align:center; padding:24px; color:var(--text-muted);">
+              <i class="fa-solid fa-spinner fa-spin"></i> Loading campus teachers...
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px; border-top:1px solid var(--border-color); padding-top:16px;">
+          <span id="gb-footer-selected-count" style="font-size:0.85rem; color:var(--text-muted);">
+            0 members selected
+          </span>
+          <div style="display:flex; gap:12px;">
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">
+              <i class="fa-solid fa-plus-circle"></i> Create Faculty Group
+            </button>
+          </div>
         </div>
       </form>
     </div>
   `;
   openModal(html);
+
+  // Initial load of teachers for initial campus
+  await fetchAndRenderGroupBuilderTeachers();
 }
 
-async function handleCreateGroup(event) {
-  event.preventDefault();
-  const formData = new FormData(event.target);
-  const payload = {
-    name: formData.get('name'),
-    description: formData.get('description'),
-    campus_id: formData.get('campus_id'),
-    allow_join_requests: formData.get('allow_join_requests') === 'true',
-    member_ids: formData.getAll('member_ids')
+async function handleGroupBuilderCampusChange(campusId) {
+  window._groupBuilderState.selectedCampusId = campusId;
+  window._groupBuilderState.selectedMembers.clear();
+  await fetchAndRenderGroupBuilderTeachers();
+}
+
+async function triggerGroupBuilderFilterUpdate() {
+  const dept = document.getElementById('gb-filter-dept')?.value || '';
+  const desig = document.getElementById('gb-filter-desig')?.value || '';
+  const subj = document.getElementById('gb-filter-subj')?.value || '';
+  const cat = document.getElementById('gb-filter-cat')?.value || '';
+  const ct = document.getElementById('gb-filter-ct')?.value || '';
+
+  window._groupBuilderState.audienceRules = {
+    departments: dept ? [dept] : [],
+    designations: desig ? [desig] : [],
+    subjects: subj ? [subj] : [],
+    categories: cat ? [cat] : [],
+    class_teacher_status: ct === 'true' ? true : (ct === 'false' ? false : null)
   };
 
+  await fetchAndRenderGroupBuilderTeachers();
+}
+
+function resetGroupBuilderFilters() {
+  if (document.getElementById('gb-filter-dept')) document.getElementById('gb-filter-dept').value = '';
+  if (document.getElementById('gb-filter-desig')) document.getElementById('gb-filter-desig').value = '';
+  if (document.getElementById('gb-filter-subj')) document.getElementById('gb-filter-subj').value = '';
+  if (document.getElementById('gb-filter-cat')) document.getElementById('gb-filter-cat').value = '';
+  if (document.getElementById('gb-filter-ct')) document.getElementById('gb-filter-ct').value = '';
+  if (document.getElementById('gb-search-input')) document.getElementById('gb-search-input').value = '';
+
+  window._groupBuilderState.audienceRules = {
+    departments: [],
+    designations: [],
+    subjects: [],
+    categories: [],
+    class_teacher_status: ''
+  };
+  window._groupBuilderState.searchQuery = '';
+  fetchAndRenderGroupBuilderTeachers();
+}
+
+async function fetchAndRenderGroupBuilderTeachers() {
+  const campusId = window._groupBuilderState.selectedCampusId;
+  if (!campusId) return;
+
   try {
-    await api('/groups', { method: 'POST', body: payload });
-    showToast('Group created successfully!', 'success');
+    const res = await api('/tasks/preview-recipients', {
+      method: 'POST',
+      body: {
+        campus_ids: [campusId],
+        audience_rules: window._groupBuilderState.audienceRules
+      }
+    });
+
+    window._groupBuilderState.teachers = (res.recipients || []).map(r => ({
+      id: r.id,
+      display_name: r.display_name,
+      email: r.email,
+      employee_code: r.employee_code,
+      campus_name: r.campus_name,
+      department_name: r.department_name,
+      designation_name: r.designation_name
+    }));
+
+    renderGroupBuilderTeachersTable();
+  } catch (err) {
+    const container = document.getElementById('gb-teachers-table-container');
+    if (container) {
+      container.innerHTML = `<div class="empty-state" style="padding:20px; color:var(--danger);"><i class="fa-solid fa-triangle-exclamation"></i> Could not load campus teachers: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+}
+
+function handleGroupBuilderSearch(query) {
+  window._groupBuilderState.searchQuery = (query || '').toLowerCase().trim();
+  renderGroupBuilderTeachersTable();
+}
+
+function renderGroupBuilderTeachersTable() {
+  const container = document.getElementById('gb-teachers-table-container');
+  const countsBadge = document.getElementById('gb-counts-badge');
+  const footerCount = document.getElementById('gb-footer-selected-count');
+  if (!container) return;
+
+  const query = window._groupBuilderState.searchQuery;
+  const allTeachers = window._groupBuilderState.teachers || [];
+  const selectedMap = window._groupBuilderState.selectedMembers;
+
+  const filtered = allTeachers.filter(t => {
+    if (!query) return true;
+    const searchString = `${t.display_name} ${t.email} ${t.employee_code || ''} ${t.department_name || ''} ${t.designation_name || ''}`.toLowerCase();
+    return searchString.includes(query);
+  });
+
+  if (countsBadge) {
+    countsBadge.innerHTML = `Showing ${filtered.length} of ${allTeachers.length} teachers (${selectedMap.size} selected)`;
+  }
+  if (footerCount) {
+    footerCount.innerHTML = `<strong>${selectedMap.size}</strong> group members selected`;
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:24px;">
+        <i class="fa-solid fa-user-slash" style="font-size:1.8rem; color:var(--text-muted); margin-bottom:6px;"></i>
+        <p>No campus teachers match the current filters and search criteria.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `
+    <table class="table table-sm" style="margin:0;">
+      <thead style="position:sticky; top:0; background:var(--bg-surface); z-index:2;">
+        <tr>
+          <th style="width:40px; text-align:center;">Add?</th>
+          <th>Teacher</th>
+          <th>Emp Code</th>
+          <th>Dept / Designation</th>
+          <th style="width:140px;">Group Role</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(t => {
+          const isSelected = selectedMap.has(t.id);
+          const currentRole = selectedMap.get(t.id) || 'MEMBER';
+          return `
+            <tr>
+              <td style="text-align:center;">
+                <input type="checkbox" class="gb-teacher-cb" value="${t.id}" ${isSelected ? 'checked' : ''} onchange="toggleGroupBuilderTeacher('${t.id}', this.checked)" />
+              </td>
+              <td>
+                <strong>${escapeHtml(t.display_name)}</strong>
+                <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.email)}</div>
+              </td>
+              <td><code>${escapeHtml(t.employee_code || '—')}</code></td>
+              <td>
+                <span style="font-size:0.8rem; color:var(--text-primary);">${escapeHtml(t.department_name || 'General')}</span>
+                ${t.designation_name ? `<div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.designation_name)}</div>` : ''}
+              </td>
+              <td>
+                <select class="form-select form-select-sm" style="font-size:0.8rem;" onchange="setGroupBuilderTeacherRole('${t.id}', this.value)" ${!isSelected ? 'disabled' : ''} id="gb-role-${t.id}">
+                  <option value="MEMBER" ${currentRole === 'MEMBER' ? 'selected' : ''}>Member</option>
+                  <option value="GROUP_ADMIN" ${currentRole === 'GROUP_ADMIN' ? 'selected' : ''}>Group Admin</option>
+                </select>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function toggleGroupBuilderTeacher(userId, checked) {
+  const roleSelect = document.getElementById(`gb-role-${userId}`);
+  if (checked) {
+    const role = roleSelect ? roleSelect.value : 'MEMBER';
+    window._groupBuilderState.selectedMembers.set(userId, role);
+    if (roleSelect) roleSelect.disabled = false;
+  } else {
+    window._groupBuilderState.selectedMembers.delete(userId);
+    if (roleSelect) roleSelect.disabled = true;
+  }
+  const footerCount = document.getElementById('gb-footer-selected-count');
+  const countsBadge = document.getElementById('gb-counts-badge');
+  const selectedSize = window._groupBuilderState.selectedMembers.size;
+  if (footerCount) footerCount.innerHTML = `<strong>${selectedSize}</strong> group members selected`;
+  if (countsBadge) {
+    countsBadge.innerHTML = `Showing ${window._groupBuilderState.teachers.length} teachers (${selectedSize} selected)`;
+  }
+}
+
+function setGroupBuilderTeacherRole(userId, role) {
+  if (window._groupBuilderState.selectedMembers.has(userId)) {
+    window._groupBuilderState.selectedMembers.set(userId, role);
+  }
+}
+
+function toggleAllGroupBuilderTeachers(check) {
+  const query = window._groupBuilderState.searchQuery;
+  const allTeachers = window._groupBuilderState.teachers || [];
+  const filtered = allTeachers.filter(t => {
+    if (!query) return true;
+    const searchString = `${t.display_name} ${t.email} ${t.employee_code || ''} ${t.department_name || ''} ${t.designation_name || ''}`.toLowerCase();
+    return searchString.includes(query);
+  });
+
+  filtered.forEach(t => {
+    if (check) {
+      if (!window._groupBuilderState.selectedMembers.has(t.id)) {
+        window._groupBuilderState.selectedMembers.set(t.id, 'MEMBER');
+      }
+    } else {
+      window._groupBuilderState.selectedMembers.delete(t.id);
+    }
+  });
+
+  renderGroupBuilderTeachersTable();
+}
+
+async function handleCreateGroupWithFilters(event) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const name = (formData.get('name') || '').trim();
+  const description = (formData.get('description') || '').trim();
+  const campus_id = formData.get('campus_id');
+  const allow_join_requests = formData.get('allow_join_requests') === 'true';
+
+  if (!name || !campus_id) {
+    return showToast('Group name and campus are required', 'warning');
+  }
+
+  const member_ids = Array.from(window._groupBuilderState.selectedMembers.entries()).map(([userId, role]) => ({
+    userId,
+    role
+  }));
+
+  try {
+    await api('/groups', {
+      method: 'POST',
+      body: {
+        name,
+        description,
+        campus_id,
+        allow_join_requests,
+        member_ids
+      }
+    });
+    showToast(`Faculty Group "${name}" created successfully with ${member_ids.length} members!`, 'success');
     closeModal();
     loadCurrentView();
-  } catch {
-    // Ignored
+  } catch (err) {
+    // Handled in api wrapper
   }
 }
 
@@ -4003,81 +4359,72 @@ async function handleSaveGroup(event, groupId) {
   }
 }
 
+// Global state for Manage Group Members Modal
+window._manageGroupState = {
+  groupId: '',
+  group: null,
+  teachers: [],
+  filterTab: 'ALL', // 'ALL', 'MEMBERS', 'NON_MEMBERS', 'PENDING'
+  searchQuery: ''
+};
+
 // Manage Managed Campus Teachers Group Members
 async function openManageGroupMembersModal(groupId) {
   const data = await api(`/groups/${groupId}/members`);
   const { group, teachers } = data;
+
+  window._manageGroupState = {
+    groupId,
+    group,
+    teachers: teachers || [],
+    filterTab: 'ALL',
+    searchQuery: ''
+  };
 
   const html = `
     <div class="card-header">
       <div>
         <h3>Manage Group Members: ${escapeHtml(group.name)}</h3>
         <span style="font-size:0.85rem; color:var(--text-muted);">
-          Campus Teachers Directory (${escapeHtml(group.campus_name || 'Assigned Campus')}) • <strong>${teachers.filter(t => t.is_member).length} Active Members</strong>
+          Campus Teachers Directory (${escapeHtml(group.campus_name || 'Assigned Campus')}) • <strong id="mg-active-count">${teachers.filter(t => t.is_member).length} Active Members</strong>
         </span>
       </div>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <div class="card-body">
       
-      <!-- Quick Filter & Bulk Toolbar -->
-      <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md);">
-        <div class="search-input-wrapper" style="flex:1; min-width:200px;">
-          <i class="fa-solid fa-magnifying-glass"></i>
-          <input type="text" id="group-member-search" class="form-input" placeholder="Search teacher by name or email..." oninput="filterGroupMembersTable()" />
+      <!-- Filter Tabs & Search Toolbar -->
+      <div style="background:var(--border-subtle); padding:12px; border-radius:var(--radius-md); margin-bottom:16px;">
+        <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+          <div style="display:flex; gap:6px;">
+            <button type="button" class="btn btn-sm btn-primary mg-tab-btn" data-tab="ALL" onclick="setManageGroupTab('ALL')">All Teachers (${teachers.length})</button>
+            <button type="button" class="btn btn-sm btn-secondary mg-tab-btn" data-tab="MEMBERS" onclick="setManageGroupTab('MEMBERS')">Active Members (${teachers.filter(t => t.is_member).length})</button>
+            <button type="button" class="btn btn-sm btn-secondary mg-tab-btn" data-tab="NON_MEMBERS" onclick="setManageGroupTab('NON_MEMBERS')">Non-Members (${teachers.filter(t => !t.is_member && t.status !== 'PENDING').length})</button>
+            <button type="button" class="btn btn-sm btn-secondary mg-tab-btn" data-tab="PENDING" onclick="setManageGroupTab('PENDING')">Pending Requests (${teachers.filter(t => t.status === 'PENDING').length})</button>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllManageGroupMembers(true)">
+              <i class="fa-solid fa-check-double"></i> Select Filtered
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllManageGroupMembers(false)">
+              <i class="fa-solid fa-square-minus"></i> Deselect Filtered
+            </button>
+          </div>
         </div>
-        <div style="display:flex; gap:8px;">
-          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGroupMembers(true)">
-            <i class="fa-solid fa-check-double"></i> Select All
-          </button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGroupMembers(false)">
-            <i class="fa-solid fa-square-minus"></i> Deselect All
-          </button>
+
+        <div class="search-input-wrapper">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="mg-search-input" class="form-input form-input-sm" placeholder="Search teacher by name, email, or employee code..." oninput="handleManageGroupSearch(this.value)" />
         </div>
       </div>
 
       <!-- Campus Teachers Table -->
       <form id="form-group-members" onsubmit="handleSaveGroupMembers(event, '${groupId}')">
-        <div class="table-responsive" style="max-height: 400px; overflow-y:auto; border:1px solid var(--border-color); border-radius:var(--radius-sm);">
-          <table class="table" id="group-members-table">
-            <thead>
-              <tr>
-                <th style="width: 40px; text-align:center;">Member?</th>
-                <th>Teacher Name & Email</th>
-                <th>Emp Code</th>
-                <th>Group Role</th>
-                <th>Current Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${teachers.length === 0 ? `
-                <tr><td colspan="5" class="empty-state">No teachers found in this campus.</td></tr>
-              ` : teachers.map(t => `
-                <tr class="group-member-row" data-search="${escapeHtml((t.display_name + ' ' + t.email + ' ' + (t.employee_code || '')).toLowerCase())}">
-                  <td style="text-align:center;">
-                    <input type="checkbox" class="group-member-checkbox" data-user-id="${t.id}" ${t.is_member ? 'checked' : ''} />
-                  </td>
-                  <td>
-                    <strong>${escapeHtml(t.display_name)}</strong>
-                    <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.email)}</div>
-                  </td>
-                  <td><code>${escapeHtml(t.employee_code || 'N/A')}</code></td>
-                  <td>
-                    <select class="form-select form-select-sm group-member-role" data-user-id="${t.id}" style="width: 140px;">
-                      <option value="MEMBER" ${t.membership_role === 'MEMBER' ? 'selected' : ''}>Member</option>
-                      <option value="GROUP_ADMIN" ${t.membership_role === 'GROUP_ADMIN' ? 'selected' : ''}>Group Admin</option>
-                    </select>
-                  </td>
-                  <td>
-                    ${t.is_member ? (t.membership_role === 'GROUP_ADMIN' ? '<span class="badge badge-active"><i class="fa-solid fa-crown"></i> Group Admin</span>' : '<span class="badge badge-in-progress">Approved Member</span>') : (t.status === 'PENDING' ? '<span class="badge badge-overdue">Request Pending</span>' : '<span class="badge badge-not-started">Not in Group</span>')}
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
+        <div class="table-responsive" style="max-height: 380px; overflow-y:auto; border:1px solid var(--border-color); border-radius:var(--radius-sm);" id="mg-table-container">
+          <!-- Populated by renderManageGroupTable -->
         </div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px; border-top:1px solid var(--border-color); padding-top:16px;">
           <span style="font-size:0.85rem; color:var(--text-muted);">
             <i class="fa-solid fa-circle-info"></i> Adding teachers grants them group task assignments and group announcements.
           </span>
@@ -4093,38 +4440,126 @@ async function openManageGroupMembersModal(groupId) {
     </div>
   `;
   openModal(html);
+  renderManageGroupTable();
 }
 
-function filterGroupMembersTable() {
-  const query = (document.getElementById('group-member-search').value || '').toLowerCase();
-  const rows = document.querySelectorAll('.group-member-row');
-  rows.forEach(r => {
-    const text = r.getAttribute('data-search') || '';
-    r.style.display = text.includes(query) ? '' : 'none';
-  });
-}
-
-function toggleAllGroupMembers(check) {
-  const rows = document.querySelectorAll('.group-member-row');
-  rows.forEach(r => {
-    if (r.style.display !== 'none') {
-      const cb = r.querySelector('.group-member-checkbox');
-      if (cb) cb.checked = check;
+function setManageGroupTab(tab) {
+  window._manageGroupState.filterTab = tab;
+  document.querySelectorAll('.mg-tab-btn').forEach(btn => {
+    if (btn.getAttribute('data-tab') === tab) {
+      btn.className = 'btn btn-sm btn-primary mg-tab-btn';
+    } else {
+      btn.className = 'btn btn-sm btn-secondary mg-tab-btn';
     }
+  });
+  renderManageGroupTable();
+}
+
+function handleManageGroupSearch(query) {
+  window._manageGroupState.searchQuery = (query || '').toLowerCase().trim();
+  renderManageGroupTable();
+}
+
+function renderManageGroupTable() {
+  const container = document.getElementById('mg-table-container');
+  if (!container) return;
+
+  const { teachers, filterTab, searchQuery } = window._manageGroupState;
+
+  const filtered = teachers.filter(t => {
+    // Tab filter
+    if (filterTab === 'MEMBERS' && !t.is_member) return false;
+    if (filterTab === 'NON_MEMBERS' && (t.is_member || t.status === 'PENDING')) return false;
+    if (filterTab === 'PENDING' && t.status !== 'PENDING') return false;
+
+    // Search query
+    if (searchQuery) {
+      const s = `${t.display_name} ${t.email} ${t.employee_code || ''}`.toLowerCase();
+      if (!s.includes(searchQuery)) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:24px;">
+        <i class="fa-solid fa-users-slash" style="font-size:1.8rem; color:var(--text-muted); margin-bottom:6px;"></i>
+        <p>No teachers match the current search or tab filter.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `
+    <table class="table" id="group-members-table">
+      <thead>
+        <tr>
+          <th style="width: 40px; text-align:center;">Member?</th>
+          <th>Teacher Name & Email</th>
+          <th>Emp Code</th>
+          <th>Group Role</th>
+          <th>Current Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(t => `
+          <tr class="group-member-row" data-user-id="${t.id}">
+            <td style="text-align:center;">
+              <input type="checkbox" class="group-member-checkbox" data-user-id="${t.id}" ${t.is_member ? 'checked' : ''} onchange="handleMemberCheckboxChange('${t.id}', this.checked)" />
+            </td>
+            <td>
+              <strong>${escapeHtml(t.display_name)}</strong>
+              <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.email)}</div>
+            </td>
+            <td><code>${escapeHtml(t.employee_code || 'N/A')}</code></td>
+            <td>
+              <select class="form-select form-select-sm group-member-role" data-user-id="${t.id}" style="width: 140px;" onchange="handleMemberRoleChange('${t.id}', this.value)">
+                <option value="MEMBER" ${t.membership_role === 'MEMBER' ? 'selected' : ''}>Member</option>
+                <option value="GROUP_ADMIN" ${t.membership_role === 'GROUP_ADMIN' ? 'selected' : ''}>Group Admin</option>
+              </select>
+            </td>
+            <td>
+              ${t.is_member ? (t.membership_role === 'GROUP_ADMIN' ? '<span class="badge badge-active"><i class="fa-solid fa-crown"></i> Group Admin</span>' : '<span class="badge badge-in-progress">Approved Member</span>') : (t.status === 'PENDING' ? '<span class="badge badge-overdue">Request Pending</span>' : '<span class="badge badge-not-started">Not in Group</span>')}
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function handleMemberCheckboxChange(userId, checked) {
+  const teacher = window._manageGroupState.teachers.find(t => t.id === userId);
+  if (teacher) {
+    teacher.is_member = checked;
+    if (checked && !teacher.membership_role) teacher.membership_role = 'MEMBER';
+  }
+}
+
+function handleMemberRoleChange(userId, role) {
+  const teacher = window._manageGroupState.teachers.find(t => t.id === userId);
+  if (teacher) {
+    teacher.membership_role = role;
+  }
+}
+
+function toggleAllManageGroupMembers(check) {
+  const checkboxes = document.querySelectorAll('.group-member-checkbox');
+  checkboxes.forEach(cb => {
+    cb.checked = check;
+    const userId = cb.getAttribute('data-user-id');
+    handleMemberCheckboxChange(userId, check);
   });
 }
 
 async function handleSaveGroupMembers(event, groupId) {
   event.preventDefault();
-  const checkboxes = document.querySelectorAll('.group-member-checkbox:checked');
-  const members = [];
-
-  checkboxes.forEach(cb => {
-    const userId = cb.getAttribute('data-user-id');
-    const roleSelect = document.querySelector(`.group-member-role[data-user-id="${userId}"]`);
-    const membership_role = roleSelect ? roleSelect.value : 'MEMBER';
-    members.push({ user_id: userId, membership_role });
-  });
+  const members = (window._manageGroupState.teachers || [])
+    .filter(t => t.is_member)
+    .map(t => ({
+      user_id: t.id,
+      membership_role: t.membership_role || 'MEMBER'
+    }));
 
   try {
     const res = await api(`/groups/${groupId}/members`, {
@@ -4808,9 +5243,9 @@ async function renderImportExport(container) {
               5-Step Lifecycle: Upload ➔ Parse ➔ Validate ➔ Preview Warnings/Errors ➔ Commit.
             </p>
             <div class="form-group" style="margin-bottom:12px;">
-              <label style="font-size:0.85rem;"><strong>Default Initial Password for Imported Teachers</strong></label>
-              <input type="text" id="import-default-password" class="form-input" value="Welcome@2026" placeholder="Welcome@2026" />
-              <span style="font-size:0.75rem; color:var(--text-muted);">Used if a teacher row does not specify a custom password in the Excel file.</span>
+              <label style="font-size:0.85rem;"><strong>Default Initial IPIN for Imported Teachers (4-6 digits)</strong></label>
+              <input type="text" id="import-default-ipin" class="form-input" value="123456" placeholder="123456" />
+              <span style="font-size:0.75rem; color:var(--text-muted);">Used if a teacher row does not specify a custom IPIN in the Excel file.</span>
             </div>
             <input type="file" id="import-file" accept=".xlsx, .xls, .csv" class="form-input" style="margin-bottom:12px;" />
             <button class="btn btn-primary btn-block" onclick="handleImportPreview()">
@@ -4880,11 +5315,11 @@ async function handleImportCommit() {
   if (!fileInput.files || fileInput.files.length === 0) {
     return showToast('Please select an Excel or CSV file first', 'warning');
   }
-  const defaultPassword = document.getElementById('import-default-password')?.value || 'Welcome@2026';
+  const defaultIpin = document.getElementById('import-default-ipin')?.value || '123456';
 
   const formData = new FormData();
   formData.append('file', fileInput.files[0]);
-  formData.append('default_password', defaultPassword);
+  formData.append('default_ipin', defaultIpin);
 
   try {
     const res = await api('/import/commit', { method: 'POST', body: formData });

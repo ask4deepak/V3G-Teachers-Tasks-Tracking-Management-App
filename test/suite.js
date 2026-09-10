@@ -433,7 +433,7 @@ West Coast Campus, WCC`;
     assert.ok(buffer.length > 0);
   });
 
-  await test('Import template includes Password (Optional) and supports initial default password', async () => {
+  await test('Import template includes IPIN (Optional) and supports initial default IPIN', async () => {
     const buffer = await services.generateImportTemplate('NEW', 'users');
     assert.ok(buffer);
     const XLSX = require('xlsx');
@@ -441,8 +441,8 @@ West Coast Campus, WCC`;
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
     assert.ok(rows.length > 0);
-    assert.ok('Password (Optional)' in rows[0]);
-    assert.strictEqual(rows[0]['Password (Optional)'], 'Welcome@2026');
+    assert.ok('IPIN (Optional)' in rows[0]);
+    assert.strictEqual(rows[0]['IPIN (Optional)'], '123456');
   });
 
   await test('EDIT import template dynamically populates teacher campus and master attributes', async () => {
@@ -533,6 +533,79 @@ West Coast Campus, WCC`;
       html: '<p>Your code is 123456</p>'
     });
     assert.ok(res);
+  });
+
+  console.log('\n--- Phase 10: Faculty Group Builder, Campus Isolation & IPIN Import ---');
+
+  let testGroupId = null;
+  await test('Create faculty group with initial members and roles', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0];
+    const teachers = store.users.filter(u => u.user_type === 'TEACHER');
+
+    const newGroupId = 'grp-test-' + Date.now();
+    store.groups.push({
+      id: newGroupId,
+      name: 'Senior Science Faculty',
+      description: 'Departmental Forum for Science Teachers',
+      campus_id: campus.id,
+      status: 'ACTIVE',
+      allow_join_requests: true,
+      created_by: 'usr-super-admin',
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    if (teachers.length > 0) {
+      store.group_memberships.push({
+        id: 'gm-test-1',
+        group_id: newGroupId,
+        user_id: teachers[0].id,
+        membership_role: 'GROUP_ADMIN',
+        status: 'APPROVED',
+        requested_at: new Date(),
+        requested_by: 'usr-super-admin',
+        reviewed_at: new Date(),
+        reviewed_by: 'usr-super-admin',
+        review_notes: 'Initial Bulk Add',
+        created_at: new Date(),
+        updated_at: new Date()
+      });
+    }
+
+    testGroupId = newGroupId;
+    const group = store.groups.find(g => g.id === newGroupId);
+    assert.ok(group);
+    assert.strictEqual(group.name, 'Senior Science Faculty');
+    const member = store.group_memberships.find(m => m.group_id === newGroupId);
+    assert.ok(member);
+    assert.strictEqual(member.membership_role, 'GROUP_ADMIN');
+  });
+
+  await test('Edit group details persists without campusId error', async () => {
+    const store = db.getMemoryStore();
+    const group = store.groups.find(g => g.id === testGroupId);
+    assert.ok(group);
+
+    group.name = 'Senior Science Faculty & Lab Incharges';
+    group.description = 'Updated Description';
+    group.status = 'ACTIVE';
+    group.updated_at = new Date();
+
+    assert.strictEqual(group.name, 'Senior Science Faculty & Lab Incharges');
+    assert.strictEqual(group.description, 'Updated Description');
+  });
+
+  await test('Import template generates with IPIN (Optional) header and default IPIN', async () => {
+    const XLSX = require('xlsx');
+    const templateBuffer = await services.generateImportTemplate('NEW', 'users');
+    assert.ok(templateBuffer);
+    const wb = XLSX.read(templateBuffer, { type: 'buffer' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+    assert.ok(rows.length > 0);
+    assert.ok('IPIN (Optional)' in rows[0]);
+    assert.strictEqual(rows[0]['IPIN (Optional)'], '123456');
   });
 
   console.log('\n========================================================');

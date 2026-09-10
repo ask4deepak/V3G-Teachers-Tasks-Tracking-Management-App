@@ -1234,7 +1234,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
           'First Name': 'John',
           'Last Name': 'Doe',
           'Phone': '+1 555-0199',
-          'Password (Optional)': 'Welcome@2026',
+          'IPIN (Optional)': '123456',
           'Campus': sampleCampus,
           'Department': 'Mathematics',
           'Designation': 'PGT (Post Graduate Teacher)',

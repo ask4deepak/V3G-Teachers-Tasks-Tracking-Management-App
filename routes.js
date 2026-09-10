@@ -1455,12 +1455,15 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
         updated_at: now
       });
 
-      for (const uid of member_ids) {
+      for (const m of member_ids) {
+        const uid = typeof m === 'object' && m ? (m.userId || m.id) : m;
+        const role = typeof m === 'object' && m && m.role ? m.role : 'MEMBER';
+        if (!uid) continue;
         store.group_memberships.push({
           id: uuidv4(),
           group_id: groupId,
           user_id: uid,
-          membership_role: 'MEMBER',
+          membership_role: role,
           status: 'APPROVED',
           requested_at: now,
           requested_by: req.user.id,
@@ -1478,19 +1481,22 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
           VALUES ($1, $2, $3, $4, 'ACTIVE', $5, $6)
         `, [groupId, name, description, campus_id, Boolean(allow_join_requests), req.user.id]);
 
-        for (const uid of member_ids) {
+        for (const m of member_ids) {
+          const uid = typeof m === 'object' && m ? (m.userId || m.id) : m;
+          const role = typeof m === 'object' && m && m.role ? m.role : 'MEMBER';
+          if (!uid) continue;
           await client.query(`
             INSERT INTO group_memberships (id, group_id, user_id, membership_role, status, requested_at, requested_by, reviewed_at, reviewed_by, review_notes)
-            VALUES ($1, $2, $3, 'MEMBER', 'APPROVED', NOW(), $4, NOW(), $4, 'Initial Bulk Add')
+            VALUES ($1, $2, $3, $4, 'APPROVED', NOW(), $5, NOW(), $5, 'Initial Bulk Add')
             ON CONFLICT (group_id, user_id) DO NOTHING
-          `, [uuidv4(), groupId, uid, req.user.id]);
+          `, [uuidv4(), groupId, uid, role, req.user.id]);
         }
       });
     }
 
     await services.logAudit({
       userId: req.user.id,
-      campusId,
+      campusId: campus_id,
       action: 'GROUP_CREATED',
       entityType: 'GROUP',
       entityId: groupId,
@@ -1533,7 +1539,7 @@ router.put('/groups/:id', auth.requirePermission('groups.edit'), async (req, res
 
     await services.logAudit({
       userId: req.user.id,
-      campusId,
+      campusId: campus_id,
       action: 'GROUP_UPDATED',
       entityType: 'GROUP',
       entityId: groupId,
@@ -1864,7 +1870,7 @@ router.get('/group-requests/pending-count', auth.requireAuth, async (req, res) =
 // 6. TASK ENGINE & BUILDER ROUTES
 // ============================================================================
 
-router.post('/tasks/preview-recipients', auth.requirePermission('tasks.create'), async (req, res) => {
+router.post('/tasks/preview-recipients', auth.requireAuth, async (req, res) => {
   try {
     const { campus_ids = [], audience_rules = {}, recipient_exclusions = [] } = req.body;
     auth.assertCampusAccess(req.user, campus_ids);
@@ -1916,6 +1922,18 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         };
       });
 
+      if (!req.user.isSuperAdmin && req.user.authorizedCampusIds) {
+        tasks = tasks.filter(t => {
+          const cids = Array.isArray(t.campus_ids) ? t.campus_ids : (typeof t.campus_ids === 'string' ? JSON.parse(t.campus_ids) : []);
+          return cids.some(cid => req.user.authorizedCampusIds.includes(cid));
+        });
+      }
+      if (campus_id) {
+        tasks = tasks.filter(t => {
+          const cids = Array.isArray(t.campus_ids) ? t.campus_ids : (typeof t.campus_ids === 'string' ? JSON.parse(t.campus_ids) : []);
+          return cids.includes(campus_id);
+        });
+      }
       if (status) tasks = tasks.filter(t => t.status === status || t.raw_status === status);
       if (search) tasks = tasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase()));
       tasks.sort((a, b) => (a.sort_order - b.sort_order) || (new Date(b.created_at) - new Date(a.created_at)));
@@ -1931,6 +1949,14 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         WHERE t.task_type != 'RECURRING_TEMPLATE'
       `;
       const p = [];
+      if (!req.user.isSuperAdmin && req.user.authorizedCampusIds && req.user.authorizedCampusIds.length > 0) {
+        p.push(req.user.authorizedCampusIds);
+        q += ` AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(t.campus_ids::jsonb) elem WHERE elem = ANY($${p.length}))`;
+      }
+      if (campus_id) {
+        p.push(campus_id);
+        q += ` AND t.campus_ids::jsonb ? $${p.length}`;
+      }
       if (status) {
         p.push(status);
         q += ` AND t.status = $${p.length}`;
@@ -2961,7 +2987,7 @@ router.post('/import/preview', auth.requirePermission('imports.execute'), upload
 router.post('/import/commit', auth.requirePermission('imports.execute'), upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Please upload an Excel or CSV file' });
-    const defaultPassword = req.body.default_password || 'Welcome@2026';
+    const defaultIpin = (req.body.default_ipin || req.body.default_password || '123456').trim();
 
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheetName = wb.SheetNames[0];
@@ -3006,7 +3032,7 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
       const status = (row['Status (ACTIVE/INACTIVE)'] || 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
       const classTeacherStr = (row['Class Teacher (Yes/No)'] || '').toString().trim().toLowerCase();
       const classTeacher = classTeacherStr === 'yes' || classTeacherStr === 'true';
-      const rawPassword = (row['Password (Optional)'] || row['Password'] || defaultPassword).toString().trim();
+      const rawIpinOrPassword = (row['IPIN (Optional)'] || row['IPIN'] || row['Password (Optional)'] || row['Password'] || defaultIpin).toString().trim();
       const campusName = (row['Campus'] || '').toString().trim();
 
       // Resolve Campus
@@ -3022,7 +3048,7 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
       }
 
       const now = new Date();
-      const passwordHash = await bcrypt.hash(rawPassword || 'Welcome@2026', 10);
+      const passwordHash = await bcrypt.hash(rawIpinOrPassword || '123456', 10);
 
       // Collect master attributes to assign
       const deptName = (row['Department'] || '').toString().trim();

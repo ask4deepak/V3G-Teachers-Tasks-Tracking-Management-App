@@ -106,7 +106,10 @@ async function resolveUserAccessContext(user) {
   const effectivePermissions = {};
   const roleNames = [];
 
-  // For any user with campus attributes, include them
+  // For any user with direct or attribute campus links, include them
+  if (user.campus_id) {
+    authorizedCampusIdSet.add(user.campus_id);
+  }
   let userCampusAttrs = [];
   if (db.isMemoryFallback()) {
     userCampusAttrs = db.getMemoryStore().user_attributes.filter(a => a.user_id === user.id);
