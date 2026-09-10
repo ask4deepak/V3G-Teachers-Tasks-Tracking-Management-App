@@ -67,6 +67,163 @@ router.post('/auth/logout', (req, res) => {
   }
 });
 
+// Temporary store for self-service IPIN reset OTPs (15 min TTL)
+const ipinResetStore = new Map();
+
+router.post('/auth/reset-ipin-request', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || !email.trim()) {
+      return res.status(400).json({ error: 'Please enter your institutional email address.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Look up user
+    let user;
+    if (db.isMemoryFallback()) {
+      user = db.getMemoryStore().users.find(u => u.email.toLowerCase() === cleanEmail);
+    } else {
+      const result = await db.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [cleanEmail]);
+      user = result.rows[0];
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'No user account found with this email address.' });
+    }
+
+    if (user.status !== 'ACTIVE') {
+      return res.status(403).json({ error: `Account is ${user.status.toLowerCase()}. Please contact your administrator.` });
+    }
+
+    // Generate 6-digit numeric OTP
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
+
+    ipinResetStore.set(cleanEmail, {
+      userId: user.id,
+      otp,
+      expiresAt,
+      attempts: 0
+    });
+
+    // Dispatch verification email
+    const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
+    try {
+      await services.dispatchMail({
+        from,
+        to: user.email,
+        subject: `Your TaskTrack IPIN Reset Code: ${otp}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 550px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 10px;">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <h2 style="color: #2563eb; margin: 0;">TaskTrack Pro</h2>
+              <p style="color: #64748b; font-size: 0.9rem; margin-top: 4px;">Institutional PIN (IPIN) Verification</p>
+            </div>
+            <p>Dear <strong>${user.display_name}</strong>,</p>
+            <p>We received a request to set or reset your Institutional PIN (IPIN) for your TaskTrack account (<code>${user.email}</code>).</p>
+            <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; text-align: center; padding: 18px; margin: 20px 0;">
+              <span style="font-size: 0.85rem; color: #1e40af; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Your 6-Digit Verification Code</span>
+              <div style="font-size: 2.2rem; font-weight: 800; letter-spacing: 6px; color: #1d4ed8; margin-top: 8px;">${otp}</div>
+            </div>
+            <p style="font-size: 0.9rem; color: #64748b;">This code is valid for <strong>15 minutes</strong>. If you did not make this request, please ignore this email.</p>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+            <p style="font-size: 0.8rem; color: #94a3b8; text-align: center;">Teacher Task Tracking & Administration System</p>
+          </div>
+        `
+      });
+    } catch (mailErr) {
+      console.warn(`[IPIN Reset] Email dispatch failed:`, mailErr.message);
+    }
+
+    await services.logAudit({
+      userId: user.id,
+      campusId: user.campus_id || null,
+      action: 'IPIN_RESET_REQUESTED',
+      entityType: 'USER',
+      entityId: user.id,
+      description: `IPIN reset verification code requested for ${user.email}`,
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: `A 6-digit verification code has been sent to ${user.email}. Please check your inbox and spam folder.`
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/auth/reset-ipin-confirm', async (req, res) => {
+  try {
+    const { email, otp, new_ipin, confirm_ipin } = req.body;
+    if (!email || !otp || !new_ipin || !confirm_ipin) {
+      return res.status(400).json({ error: 'All fields (Email, Verification Code, New IPIN, Confirm IPIN) are required.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = String(otp).trim();
+    const cleanIpin = String(new_ipin).trim();
+    const cleanConfirm = String(confirm_ipin).trim();
+
+    if (cleanIpin !== cleanConfirm) {
+      return res.status(400).json({ error: 'New IPIN and Confirm IPIN do not match.' });
+    }
+
+    if (!/^[0-9]{4,6}$/.test(cleanIpin)) {
+      return res.status(400).json({ error: 'IPIN must be a 4 to 6 digit numeric PIN (e.g. 123456).' });
+    }
+
+    const record = ipinResetStore.get(cleanEmail);
+    if (!record || Date.now() > record.expiresAt) {
+      return res.status(400).json({ error: 'Verification code has expired or is invalid. Please request a new code.' });
+    }
+
+    if (record.otp !== cleanOtp) {
+      record.attempts = (record.attempts || 0) + 1;
+      if (record.attempts >= 5) {
+        ipinResetStore.delete(cleanEmail);
+        return res.status(400).json({ error: 'Too many incorrect attempts. Please request a new code.' });
+      }
+      return res.status(400).json({ error: 'Invalid verification code. Please check your email.' });
+    }
+
+    // Hash new IPIN
+    const password_hash = await bcrypt.hash(cleanIpin, 10);
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const user = db.getMemoryStore().users.find(u => u.id === record.userId);
+      if (user) {
+        user.password_hash = password_hash;
+        user.updated_at = now;
+      }
+    } else {
+      await db.query('UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3', [password_hash, now, record.userId]);
+    }
+
+    // Clean up reset record
+    ipinResetStore.delete(cleanEmail);
+
+    await services.logAudit({
+      userId: record.userId,
+      action: 'IPIN_RESET_CONFIRMED',
+      entityType: 'USER',
+      entityId: record.userId,
+      description: `Institutional PIN (IPIN) successfully reset for ${cleanEmail}`,
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: 'Your IPIN has been set / reset successfully! You can now sign in with your new IPIN.'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/auth/me', auth.requireAuth, async (req, res) => {
   try {
     // Re-resolve access context on fresh load to reflect immediate role/campus updates

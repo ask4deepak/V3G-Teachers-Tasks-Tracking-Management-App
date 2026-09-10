@@ -484,6 +484,30 @@ West Coast Campus, WCC`;
     assert.throws(() => auth.assertCampusAccess(teacherUser, 'unauthorized-campus-999'), /Unauthorized access attempt/);
   });
 
+  console.log('\n--- Phase 8: IPIN Reset via Email & OTP Flow ---');
+
+  await test('User can successfully update and authenticate with new numeric IPIN', async () => {
+    const store = db.getMemoryStore();
+    const user = store.users.find(u => u.email === 'teacher.sarah@institution.edu');
+    assert.ok(user);
+
+    // Simulate IPIN update to '654321'
+    const newPin = '654321';
+    const newHash = await bcrypt.hash(newPin, 10);
+    user.password_hash = newHash;
+
+    // Authenticate with new PIN
+    const authUser = await auth.authenticate('teacher.sarah@institution.edu', '654321');
+    assert.strictEqual(authUser.email, 'teacher.sarah@institution.edu');
+    assert.strictEqual(authUser.display_name, 'Sarah Johnson');
+
+    // Old password should fail
+    await assert.rejects(
+      async () => await auth.authenticate('teacher.sarah@institution.edu', 'Teacher@123'),
+      /Invalid email or Institutional PIN/
+    );
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

@@ -155,14 +155,11 @@ function renderAuthenticatedApp() {
   elements.navUserRole.textContent = state.user.roles[0] || state.user.user_type;
   elements.navUserAvatar.textContent = (state.user.first_name || 'U').charAt(0).toUpperCase();
 
-  // Set Operational Date in Topbar
+  // Set Operational Date in Topbar (Asia/Kolkata)
   const topbarDate = document.getElementById('topbar-current-date');
   if (topbarDate) {
     const today = new Date();
-    const dd = String(today.getDate()).padStart(2, '0');
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const yyyy = today.getFullYear();
-    topbarDate.textContent = `${dd}/${mm}/${yyyy}`;
+    topbarDate.textContent = today.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' });
   }
 
   // Setup Clean Active Campus Dropdown Widget
@@ -2055,7 +2052,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         </div>
 
         <div class="form-group">
-          <label>Departments</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">Departments</label>
+            <div style="font-size:0.8rem;">
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_depts', true)">Select All</button>
+              <span style="color:var(--text-muted);">|</span>
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_depts', false)">Clear</button>
+            </div>
+          </div>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${depts.map(d => `
               <label class="checkbox-label">
@@ -2067,7 +2071,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         </div>
 
         <div class="form-group">
-          <label>Designations</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">Designations</label>
+            <div style="font-size:0.8rem;">
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_desigs', true)">Select All</button>
+              <span style="color:var(--text-muted);">|</span>
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_desigs', false)">Clear</button>
+            </div>
+          </div>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${desigs.map(d => `
               <label class="checkbox-label">
@@ -2079,7 +2090,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         </div>
 
         <div class="form-group">
-          <label>Subjects</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">Subjects</label>
+            <div style="font-size:0.8rem;">
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_subjs', true)">Select All</button>
+              <span style="color:var(--text-muted);">|</span>
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_subjs', false)">Clear</button>
+            </div>
+          </div>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${subjs.map(s => `
               <label class="checkbox-label">
@@ -2092,7 +2110,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
 
         ${cats && cats.length > 0 ? `
           <div class="form-group">
-            <label>Categories</label>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <label style="margin:0;">Categories</label>
+              <div style="font-size:0.8rem;">
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_cats', true)">Select All</button>
+                <span style="color:var(--text-muted);">|</span>
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_cats', false)">Clear</button>
+              </div>
+            </div>
             <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
               ${cats.map(c => `
                 <label class="checkbox-label">
@@ -2105,7 +2130,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         ` : ''}
 
         <div class="form-group">
-          <label>Faculty Groups</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">Faculty Groups</label>
+            <div style="font-size:0.8rem;">
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_groups', true)">Select All</button>
+              <span style="color:var(--text-muted);">|</span>
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_groups', false)">Clear</button>
+            </div>
+          </div>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
             ${groups.map(g => `
               <label class="checkbox-label">
@@ -2140,24 +2172,38 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           recipient_exclusions: tb.recipient_exclusions
         }
       });
-      tb.previewRecipients = previewRes.recipients;
+      tb.previewRecipients = previewRes.recipients || [];
+      const totalRecipients = tb.previewRecipients.length;
+      const activeCountStep5 = tb.previewRecipients.filter(r => !tb.recipient_exclusions.includes(r.id)).length;
+      const isAllChecked = totalRecipients > 0 && activeCountStep5 === totalRecipients;
+      const isIndeterminate = activeCountStep5 > 0 && activeCountStep5 < totalRecipients;
 
       return `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom: 16px;">
           <div>
-            <h3>Step 5: Dynamic Recipient Preview</h3>
-            <span class="badge badge-in-progress">${previewRes.active_count} of ${previewRes.total_count} Teachers Selected</span>
+            <h3 style="margin:0 0 6px 0;">Step 5: Dynamic Recipient Preview</h3>
+            <span id="recipient-selection-badge" class="badge badge-in-progress">${activeCountStep5} of ${totalRecipients} Teachers Selected</span>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllRecipients(true)" style="display:inline-flex; align-items:center; gap:6px;">
+              <i class="fa-solid fa-check-double"></i> Select All
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllRecipients(false)" style="display:inline-flex; align-items:center; gap:6px;">
+              <i class="fa-solid fa-square-xmark"></i> Deselect All
+            </button>
           </div>
         </div>
         <p style="color:var(--text-muted); font-size:0.88rem; margin-bottom: 16px;">
-          All matching teachers are selected by default. Uncheck individual teachers to exclude them from this task.
+          All matching teachers are selected by default. Use the master checkbox or click individual checkboxes to include or exclude teachers from this task.
         </p>
 
         <div class="table-responsive" style="max-height: 350px; overflow-y: auto;">
           <table class="table">
             <thead>
               <tr>
-                <th style="width: 40px;">Select</th>
+                <th style="width: 44px; text-align:center;">
+                  <input type="checkbox" id="select-all-recipients" ${isAllChecked ? 'checked' : ''} ${isIndeterminate ? 'data-indeterminate="true"' : ''} onchange="toggleAllRecipients(this.checked)" title="Select / Deselect All" style="cursor:pointer; width:16px; height:16px;" />
+                </th>
                 <th>Teacher Name</th>
                 <th>Email</th>
                 <th>Campus</th>
@@ -2165,17 +2211,20 @@ async function renderTaskBuilderStepContent(tb, campuses) {
               </tr>
             </thead>
             <tbody>
-              ${tb.previewRecipients.map(r => `
+              ${tb.previewRecipients.map(r => {
+                const isExcluded = tb.recipient_exclusions.includes(r.id);
+                return `
                 <tr>
-                  <td>
-                    <input type="checkbox" class="recipient-toggle" value="${r.id}" ${!r.is_excluded ? 'checked' : ''} onchange="toggleRecipientExclusion('${r.id}', this.checked)" />
+                  <td style="text-align:center;">
+                    <input type="checkbox" class="recipient-toggle" data-user-id="${r.id}" value="${r.id}" ${!isExcluded ? 'checked' : ''} onchange="toggleRecipientExclusion('${r.id}', this.checked)" style="cursor:pointer; width:16px; height:16px;" />
                   </td>
                   <td><strong>${escapeHtml(r.display_name)}</strong></td>
                   <td>${escapeHtml(r.email)}</td>
                   <td>${escapeHtml(r.campus_name)}</td>
                   <td>${r.class_teacher_status ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>
                 </tr>
-              `).join('')}
+              `;
+              }).join('')}
             </tbody>
           </table>
         </div>
@@ -2362,14 +2411,68 @@ function saveTaskBuilderAudience() {
   loadCurrentView();
 }
 
+function toggleCheckboxGroup(name, selectAll) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach(cb => {
+    cb.checked = selectAll;
+  });
+}
+window.toggleCheckboxGroup = toggleCheckboxGroup;
+
 function toggleRecipientExclusion(userId, isChecked) {
   const tb = state.taskBuilder;
+  if (!tb) return;
   if (!isChecked) {
     if (!tb.recipient_exclusions.includes(userId)) tb.recipient_exclusions.push(userId);
   } else {
     tb.recipient_exclusions = tb.recipient_exclusions.filter(id => id !== userId);
   }
+  updateRecipientPreviewState();
 }
+
+function toggleAllRecipients(isChecked) {
+  const tb = state.taskBuilder;
+  if (!tb || !tb.previewRecipients) return;
+  if (isChecked) {
+    tb.recipient_exclusions = [];
+    document.querySelectorAll('.recipient-toggle').forEach(el => el.checked = true);
+    const master = document.getElementById('select-all-recipients');
+    if (master) { master.checked = true; master.indeterminate = false; }
+  } else {
+    tb.recipient_exclusions = tb.previewRecipients.map(r => r.id);
+    document.querySelectorAll('.recipient-toggle').forEach(el => el.checked = false);
+    const master = document.getElementById('select-all-recipients');
+    if (master) { master.checked = false; master.indeterminate = false; }
+  }
+  updateRecipientPreviewState();
+}
+
+function updateRecipientPreviewState() {
+  const tb = state.taskBuilder;
+  if (!tb || !tb.previewRecipients) return;
+  const total = tb.previewRecipients.length;
+  const active = tb.previewRecipients.filter(r => !tb.recipient_exclusions.includes(r.id)).length;
+  const badge = document.getElementById('recipient-selection-badge');
+  if (badge) {
+    badge.textContent = `${active} of ${total} Teachers Selected`;
+  }
+  const master = document.getElementById('select-all-recipients');
+  if (master) {
+    if (active === 0) {
+      master.checked = false;
+      master.indeterminate = false;
+    } else if (active === total) {
+      master.checked = true;
+      master.indeterminate = false;
+    } else {
+      master.checked = false;
+      master.indeterminate = true;
+    }
+  }
+}
+
+window.toggleAllRecipients = toggleAllRecipients;
+window.toggleRecipientExclusion = toggleRecipientExclusion;
+window.updateRecipientPreviewState = updateRecipientPreviewState;
 
 async function saveTaskDraft() {
   const tb = state.taskBuilder;
@@ -5265,12 +5368,25 @@ function closeMobileSidebar() {
 
 function formatDate(d) {
   if (!d) return 'N/A';
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return new Date(d).toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
 }
 
 function formatDateTime(d) {
   if (!d) return 'N/A';
-  return new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return new Date(d).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
 }
 
 function formatStatus(status) {
@@ -5286,6 +5402,146 @@ function formatStatus(status) {
     default: return status;
   }
 }
+
+// Self-Service Set / Reset Institutional PIN (IPIN) via Institutional Email
+function openResetIpinModal(step = 1, email = '') {
+  if (step === 1) {
+    openModal(`
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h2><i class="fa-solid fa-key text-primary"></i> Set / Reset Institutional PIN (IPIN)</h2>
+        <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="card-body">
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:16px;">
+          Enter your registered institutional email address (username). We will email you a 6-digit verification code to set or reset your IPIN.
+        </p>
+        <form onsubmit="handleRequestIpinOtp(event)">
+          <div class="form-group">
+            <label>Institutional Email <span class="text-danger">*</span></label>
+            <input type="email" id="reset-ipin-email" class="form-input" placeholder="e.g. ask4deepak@gmail.com" value="${escapeHtml(email || (elements.loginEmail ? elements.loginEmail.value : ''))}" required autofocus />
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px;">
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button type="submit" id="btn-request-ipin-otp" class="btn btn-primary">
+              <i class="fa-solid fa-paper-plane"></i> Send Verification Code
+            </button>
+          </div>
+        </form>
+      </div>
+    `);
+  } else if (step === 2) {
+    openModal(`
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h2><i class="fa-solid fa-shield-halved text-primary"></i> Enter Code & Set New IPIN</h2>
+        <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="card-body">
+        <div style="background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; padding:10px 14px; border-radius:6px; font-size:0.88rem; margin-bottom:16px;">
+          <i class="fa-solid fa-envelope-circle-check"></i> 6-digit verification code sent to <strong>${escapeHtml(email)}</strong>
+        </div>
+        <form onsubmit="handleConfirmIpinReset(event, '${escapeHtml(email)}')">
+          <div class="form-group">
+            <label>6-Digit Verification Code (OTP) <span class="text-danger">*</span></label>
+            <input type="text" id="reset-ipin-otp" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="e.g. 123456" required autofocus style="letter-spacing: 2px; font-weight: bold; font-size: 1.1rem;" />
+          </div>
+          <div class="form-group">
+            <label>New Institutional PIN (IPIN) <span class="text-danger">*</span></label>
+            <input type="password" id="reset-ipin-new" class="form-input" inputmode="numeric" pattern="[0-9]{4,6}" maxlength="6" placeholder="4-6 digit numeric PIN" required />
+            <small style="color:var(--text-muted); font-size:0.75rem;">Must be 4 to 6 numeric digits (e.g. 123456)</small>
+          </div>
+          <div class="form-group">
+            <label>Confirm New IPIN <span class="text-danger">*</span></label>
+            <input type="password" id="reset-ipin-confirm" class="form-input" inputmode="numeric" pattern="[0-9]{4,6}" maxlength="6" placeholder="Re-enter 4-6 digit numeric PIN" required />
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-top:20px;">
+            <button type="button" class="btn btn-link" style="padding:0; font-size:0.85rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="openResetIpinModal(1, '${escapeHtml(email)}')">
+              <i class="fa-solid fa-arrow-left"></i> Resend Code / Change Email
+            </button>
+            <div style="display:flex; gap:12px;">
+              <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+              <button type="submit" id="btn-confirm-ipin-reset" class="btn btn-success">
+                <i class="fa-solid fa-check"></i> Save New IPIN
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    `);
+  }
+}
+
+async function handleRequestIpinOtp(event) {
+  event.preventDefault();
+  const emailInput = document.getElementById('reset-ipin-email');
+  const email = emailInput ? emailInput.value.trim() : '';
+  if (!email) return showToast('Please enter your institutional email', 'warning');
+
+  const btn = document.getElementById('btn-request-ipin-otp');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Sending Code...`;
+  }
+
+  try {
+    const res = await api('/auth/reset-ipin-request', {
+      method: 'POST',
+      body: { email }
+    });
+    showToast(res.message || 'Verification code sent to your email!', 'success');
+    openResetIpinModal(2, email);
+  } catch {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i class="fa-solid fa-paper-plane"></i> Send Verification Code`;
+    }
+  }
+}
+
+async function handleConfirmIpinReset(event, email) {
+  event.preventDefault();
+  const otp = document.getElementById('reset-ipin-otp')?.value.trim();
+  const new_ipin = document.getElementById('reset-ipin-new')?.value.trim();
+  const confirm_ipin = document.getElementById('reset-ipin-confirm')?.value.trim();
+
+  if (!otp || !new_ipin || !confirm_ipin) {
+    return showToast('Please fill in all fields', 'warning');
+  }
+  if (new_ipin !== confirm_ipin) {
+    return showToast('New IPIN and Confirm IPIN do not match', 'danger');
+  }
+  if (!/^[0-9]{4,6}$/.test(new_ipin)) {
+    return showToast('IPIN must be 4 to 6 numeric digits', 'danger');
+  }
+
+  const btn = document.getElementById('btn-confirm-ipin-reset');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Updating IPIN...`;
+  }
+
+  try {
+    const res = await api('/auth/reset-ipin-confirm', {
+      method: 'POST',
+      body: { email, otp, new_ipin, confirm_ipin }
+    });
+    showToast(res.message || 'IPIN successfully reset!', 'success');
+    closeModal();
+    if (elements.loginEmail) elements.loginEmail.value = email;
+    if (elements.loginPassword) {
+      elements.loginPassword.value = '';
+      elements.loginPassword.focus();
+    }
+  } catch {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i class="fa-solid fa-check"></i> Save New IPIN`;
+    }
+  }
+}
+
+window.openResetIpinModal = openResetIpinModal;
+window.handleRequestIpinOtp = handleRequestIpinOtp;
+window.handleConfirmIpinReset = handleConfirmIpinReset;
 
 // SMTP Test Email Modal for Super Admins & Admins
 function openTestEmailModal() {

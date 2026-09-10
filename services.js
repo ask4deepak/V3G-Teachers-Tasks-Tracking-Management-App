@@ -889,7 +889,7 @@ async function sendTestEmail(toEmail) {
 async function sendTaskAssignedEmail(teacher, task, deadline) {
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
-  const deadlineStr = new Date(deadline).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  const deadlineStr = new Date(deadline).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
 
   return dispatchMail({
     from,
@@ -903,7 +903,7 @@ async function sendTaskAssignedEmail(teacher, task, deadline) {
         <div style="background-color: #f8fafc; padding: 15px; border-left: 4px solid #2563eb; margin: 15px 0;">
           <h3 style="margin: 0 0 8px 0; color: #1e293b;">${task.title}</h3>
           <p style="margin: 0 0 8px 0; color: #64748b;">${task.description || 'No additional description provided.'}</p>
-          <p style="margin: 0; font-weight: bold; color: #dc2626;">Deadline: ${deadlineStr}</p>
+          <p style="margin: 0; font-weight: bold; color: #dc2626;">Deadline: ${deadlineStr} (IST)</p>
         </div>
         <p>Please log in to your portal to review and submit your response before the deadline.</p>
         <div style="text-align: center; margin: 25px 0;">
@@ -919,7 +919,7 @@ async function sendTaskAssignedEmail(teacher, task, deadline) {
 async function sendTaskReminderEmail(teacher, task, deadline) {
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
-  const deadlineStr = new Date(deadline).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  const deadlineStr = new Date(deadline).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
 
   return dispatchMail({
     from,
@@ -932,7 +932,7 @@ async function sendTaskReminderEmail(teacher, task, deadline) {
         <p>This is a reminder that you have a pending submission for the following task:</p>
         <div style="background-color: #fff7ed; padding: 15px; border-left: 4px solid #ea580c; margin: 15px 0;">
           <h3 style="margin: 0 0 8px 0; color: #9a3412;">${task.title}</h3>
-          <p style="margin: 0; font-weight: bold; color: #c2410c;">Due: ${deadlineStr}</p>
+          <p style="margin: 0; font-weight: bold; color: #c2410c;">Due: ${deadlineStr} (IST)</p>
         </div>
         <p>Please complete and submit your response promptly.</p>
         <div style="text-align: center; margin: 25px 0;">
