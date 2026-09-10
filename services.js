@@ -638,8 +638,82 @@ function getEmailTransporter() {
   return emailTransporter;
 }
 
+async function getGoogleAccessToken(clientId, clientSecret, refreshToken) {
+  const params = new URLSearchParams({
+    client_id: clientId.trim(),
+    client_secret: clientSecret.trim(),
+    refresh_token: refreshToken.trim(),
+    grant_type: 'refresh_token'
+  });
+
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error_description || data.error || 'Failed to refresh Google OAuth2 access token');
+  }
+  return data.access_token;
+}
+
+async function sendViaGmailRestApi(mailOptions, clientId, clientSecret, refreshToken) {
+  const accessToken = await getGoogleAccessToken(clientId, clientSecret, refreshToken);
+
+  const utf8Subject = `=?utf-8?B?${Buffer.from(mailOptions.subject).toString('base64')}?=`;
+  const messageParts = [
+    `From: ${mailOptions.from}`,
+    `To: ${mailOptions.to}`,
+    `Subject: ${utf8Subject}`,
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    '',
+    mailOptions.html
+  ];
+
+  const message = messageParts.join('\r\n');
+  const encodedMessage = Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const sendRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ raw: encodedMessage })
+  });
+
+  const sendData = await sendRes.json();
+  if (!sendRes.ok) {
+    throw new Error(sendData.error ? sendData.error.message : 'Gmail REST API send failed');
+  }
+
+  return { messageId: sendData.id, isMock: false, strategy: 'Google OAuth2 REST API (Port 443 HTTPS)' };
+}
+
 async function dispatchMail(mailOptions) {
-  // 1. Resend HTTP API Delivery Strategy (Bypasses all cloud firewall SMTP port blocks)
+  // 1. Google OAuth2 Gmail REST API Strategy (HTTPS Port 443 - Never blocked on Railway)
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
+    try {
+      return await sendViaGmailRestApi(
+        mailOptions,
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REFRESH_TOKEN
+      );
+    } catch (err) {
+      console.error('[Email Service] Google OAuth2 REST API error:', err.message);
+      throw err;
+    }
+  }
+
+  // 2. Resend HTTP API Delivery Strategy (Bypasses all cloud firewall SMTP port blocks)
   if (process.env.RESEND_API_KEY) {
     try {
       const resendRes = await fetch('https://api.resend.com/emails', {
@@ -719,6 +793,21 @@ async function dispatchMail(mailOptions) {
 }
 
 async function sendTestEmail(toEmail) {
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
+    const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'contact@srbps.com';
+    return dispatchMail({
+      from,
+      to: toEmail,
+      subject: 'TaskTrack Pro: Google OAuth2 Gmail REST API Verified',
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #22c55e; border-radius: 8px;">
+          <h2 style="color: #16a34a; margin-top: 0;">🎉 Google OAuth2 Gmail REST API Verified!</h2>
+          <p>Congratulations! Your email notification engine is connected via Google Cloud OAuth2 REST API (Port 443 HTTPS) and is fully verified.</p>
+        </div>
+      `
+    });
+  }
+
   if (process.env.RESEND_API_KEY) {
     const from = process.env.EMAIL_FROM || 'onboarding@resend.dev';
     return dispatchMail({
