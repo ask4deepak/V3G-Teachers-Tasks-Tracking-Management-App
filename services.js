@@ -1257,6 +1257,8 @@ module.exports = {
   publishTask,
   processRecurringTasks,
   calculateNextOccurrence,
+  dispatchMail,
+  getEffectiveEmailConfig,
   sendTaskAssignedEmail,
   sendTaskReminderEmail,
   sendGroupJoinRequestEmail,

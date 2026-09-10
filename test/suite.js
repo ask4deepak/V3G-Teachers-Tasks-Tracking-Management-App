@@ -525,6 +525,16 @@ West Coast Campus, WCC`;
     assert.strictEqual(updated.default_deadline_offset_hours, '48');
   });
 
+  await test('services.dispatchMail is exported and callable', async () => {
+    assert.strictEqual(typeof services.dispatchMail, 'function');
+    const res = await services.dispatchMail({
+      to: 'test@example.com',
+      subject: 'Test Verification Code: 123456',
+      html: '<p>Your code is 123456</p>'
+    });
+    assert.ok(res);
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');
