@@ -1220,19 +1220,22 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
         }
 
         if (campus_id) {
-          const uaCheck = await client.query('SELECT id FROM user_access WHERE user_id = $1', [userId]);
+          const uaCheck = await client.query('SELECT id, role_id FROM user_access WHERE user_id = $1', [userId]);
+          let roleId = null;
           if (uaCheck.rows.length > 0) {
-            await client.query('UPDATE user_access SET campus_id = $1, updated_at = NOW() WHERE user_id = $2', [campus_id, userId]);
+            roleId = uaCheck.rows[0].role_id;
+            await client.query('DELETE FROM user_access WHERE user_id = $1', [userId]);
           } else {
             const rRes = await client.query("SELECT id FROM roles WHERE name ILIKE '%Teacher%' LIMIT 1");
-            const roleId = rRes.rows[0] ? rRes.rows[0].id : null;
-            if (roleId) {
-              await client.query(`
-                INSERT INTO user_access (id, user_id, role_id, campus_id, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, NOW(), NOW())
-                ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
-              `, [uuidv4(), userId, roleId, campus_id]);
-            }
+            roleId = rRes.rows[0] ? rRes.rows[0].id : null;
+          }
+
+          if (roleId) {
+            await client.query(`
+              INSERT INTO user_access (id, user_id, role_id, campus_id, created_at, updated_at)
+              VALUES ($1, $2, $3, $4, NOW(), NOW())
+              ON CONFLICT (user_id, role_id, campus_id) DO NOTHING
+            `, [uuidv4(), userId, roleId, campus_id]);
           }
 
           await client.query('DELETE FROM user_attributes WHERE user_id = $1', [userId]);
@@ -1386,39 +1389,53 @@ router.get('/groups', auth.requireAuth, async (req, res) => {
         const members = store.group_memberships.filter(m => m.group_id === g.id && m.status === 'APPROVED');
         const userMem = store.group_memberships.find(m => m.group_id === g.id && m.user_id === req.user.id);
         const camp = store.campuses.find(c => c.id === g.campus_id);
+        const gCids = Array.isArray(g.campus_ids) ? g.campus_ids : (g.campus_id ? [g.campus_id] : []);
+        const campNames = gCids.map(cid => {
+          const c = store.campuses.find(cp => cp.id === cid);
+          return c ? c.name : null;
+        }).filter(Boolean);
+
         return {
           ...g,
-          campus_name: camp ? camp.name : 'Unknown',
+          campus_name: campNames.length > 0 ? campNames.join(', ') : (camp ? camp.name : 'Unknown'),
+          campus_ids: gCids,
           member_count: members.length,
           user_membership_status: userMem ? userMem.status : null,
           user_membership_role: userMem ? userMem.membership_role : null
         };
       });
+
       if (!req.user.isSuperAdmin) {
-        groups = groups.filter(g => req.user.authorizedCampusIds.includes(g.campus_id));
+        groups = groups.filter(g => {
+          const gCids = Array.isArray(g.campus_ids) ? g.campus_ids : (g.campus_id ? [g.campus_id] : []);
+          return gCids.some(cid => req.user.authorizedCampusIds.includes(cid));
+        });
       }
       if (campus_id) {
-        groups = groups.filter(g => g.campus_id === campus_id);
+        groups = groups.filter(g => {
+          const gCids = Array.isArray(g.campus_ids) ? g.campus_ids : (g.campus_id ? [g.campus_id] : []);
+          return gCids.includes(campus_id);
+        });
       }
     } else {
       let q = `
-        SELECT g.*, c.name as campus_name,
+        SELECT g.*, COALESCE(c.name, '') as campus_name,
         (SELECT COUNT(*) FROM group_memberships gm WHERE gm.group_id = g.id AND gm.status = 'APPROVED') as member_count,
         (SELECT gm.status FROM group_memberships gm WHERE gm.group_id = g.id AND gm.user_id = $1) as user_membership_status,
         (SELECT gm.membership_role FROM group_memberships gm WHERE gm.group_id = g.id AND gm.user_id = $1) as user_membership_role
         FROM groups g
-        JOIN campuses c ON g.campus_id = c.id
+        LEFT JOIN campuses c ON g.campus_id = c.id
         WHERE 1=1
       `;
       const p = [req.user.id];
 
       if (!req.user.isSuperAdmin) {
         p.push(req.user.authorizedCampusIds || []);
-        q += ` AND g.campus_id = ANY($${p.length})`;
+        q += ` AND (g.campus_id = ANY($${p.length}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($${p.length})))`;
       }
       if (campus_id) {
         p.push(campus_id);
-        q += ` AND g.campus_id = $${p.length}`;
+        q += ` AND (g.campus_id = $${p.length} OR COALESCE(g.campus_ids, '[]'::jsonb) ? $${p.length})`;
       }
       q += ' ORDER BY g.name ASC';
       const result = await db.query(q, p);
@@ -1433,10 +1450,15 @@ router.get('/groups', auth.requireAuth, async (req, res) => {
 
 router.post('/groups', auth.requirePermission('groups.create'), async (req, res) => {
   try {
-    const { name, description, campus_id, allow_join_requests = true, member_ids = [] } = req.body;
-    if (!name || !campus_id) return res.status(400).json({ error: 'Group name and campus are required' });
+    const { name, description, campus_id, campus_ids = [], allow_join_requests = true, member_ids = [] } = req.body;
+    const finalCampusIds = Array.isArray(campus_ids) && campus_ids.length > 0 ? campus_ids : (campus_id ? [campus_id] : []);
+    const primaryCampusId = finalCampusIds[0] || campus_id;
 
-    auth.assertCampusAccess(req.user, campus_id);
+    if (!name || finalCampusIds.length === 0) {
+      return res.status(400).json({ error: 'Group name and at least one campus are required' });
+    }
+
+    auth.assertCampusAccess(req.user, finalCampusIds);
 
     const groupId = uuidv4();
     const now = new Date();
@@ -1447,7 +1469,8 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
         id: groupId,
         name,
         description,
-        campus_id,
+        campus_id: primaryCampusId,
+        campus_ids: finalCampusIds,
         status: 'ACTIVE',
         allow_join_requests: Boolean(allow_join_requests),
         created_by: req.user.id,
@@ -1477,9 +1500,9 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
     } else {
       await db.transaction(async (client) => {
         await client.query(`
-          INSERT INTO groups (id, name, description, campus_id, status, allow_join_requests, created_by)
-          VALUES ($1, $2, $3, $4, 'ACTIVE', $5, $6)
-        `, [groupId, name, description, campus_id, Boolean(allow_join_requests), req.user.id]);
+          INSERT INTO groups (id, name, description, campus_id, campus_ids, status, allow_join_requests, created_by)
+          VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6, $7)
+        `, [groupId, name, description, primaryCampusId, JSON.stringify(finalCampusIds), Boolean(allow_join_requests), req.user.id]);
 
         for (const m of member_ids) {
           const uid = typeof m === 'object' && m ? (m.userId || m.id) : m;
@@ -1496,11 +1519,11 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
 
     await services.logAudit({
       userId: req.user.id,
-      campusId: campus_id,
+      campusId: primaryCampusId,
       action: 'GROUP_CREATED',
       entityType: 'GROUP',
       entityId: groupId,
-      description: `Created group "${name}" with ${member_ids.length} initial members.`,
+      description: `Created group "${name}" across ${finalCampusIds.length} campuses with ${member_ids.length} initial members.`,
       ipAddress: req.ip
     });
 
@@ -1513,10 +1536,15 @@ router.post('/groups', auth.requirePermission('groups.create'), async (req, res)
 router.put('/groups/:id', auth.requirePermission('groups.edit'), async (req, res) => {
   try {
     const groupId = req.params.id;
-    const { name, description, campus_id, allow_join_requests = true, status = 'ACTIVE' } = req.body;
-    if (!name || !campus_id) return res.status(400).json({ error: 'Group name and campus are required' });
+    const { name, description, campus_id, campus_ids = [], allow_join_requests = true, status = 'ACTIVE' } = req.body;
+    const finalCampusIds = Array.isArray(campus_ids) && campus_ids.length > 0 ? campus_ids : (campus_id ? [campus_id] : []);
+    const primaryCampusId = finalCampusIds[0] || campus_id;
 
-    auth.assertCampusAccess(req.user, campus_id);
+    if (!name || finalCampusIds.length === 0) {
+      return res.status(400).json({ error: 'Group name and at least one campus are required' });
+    }
+
+    auth.assertCampusAccess(req.user, finalCampusIds);
     const now = new Date();
 
     if (db.isMemoryFallback()) {
@@ -1525,21 +1553,22 @@ router.put('/groups/:id', auth.requirePermission('groups.edit'), async (req, res
       if (!group) return res.status(404).json({ error: 'Group not found' });
       group.name = name;
       group.description = description;
-      group.campus_id = campus_id;
+      group.campus_id = primaryCampusId;
+      group.campus_ids = finalCampusIds;
       group.allow_join_requests = Boolean(allow_join_requests);
       group.status = status;
       group.updated_at = now;
     } else {
       await db.query(`
         UPDATE groups
-        SET name = $1, description = $2, campus_id = $3, allow_join_requests = $4, status = $5, updated_at = NOW()
-        WHERE id = $6
-      `, [name, description, campus_id, Boolean(allow_join_requests), status, groupId]);
+        SET name = $1, description = $2, campus_id = $3, campus_ids = $4, allow_join_requests = $5, status = $6, updated_at = NOW()
+        WHERE id = $7
+      `, [name, description, primaryCampusId, JSON.stringify(finalCampusIds), Boolean(allow_join_requests), status, groupId]);
     }
 
     await services.logAudit({
       userId: req.user.id,
-      campusId: campus_id,
+      campusId: primaryCampusId,
       action: 'GROUP_UPDATED',
       entityType: 'GROUP',
       entityId: groupId,
@@ -1566,8 +1595,33 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
       if (!group) return res.status(404).json({ error: 'Group not found' });
 
       memberships = store.group_memberships.filter(m => m.group_id === groupId);
-      const teacherIdsInCampus = store.user_attributes.filter(a => a.campus_id === group.campus_id).map(a => a.user_id);
-      campusTeachers = store.users.filter(u => u.status === 'ACTIVE' && (teacherIdsInCampus.includes(u.id) || (u.campus_id === group.campus_id)));
+      const groupCampusIds = Array.isArray(group.campus_ids) && group.campus_ids.length > 0 ? group.campus_ids : (group.campus_id ? [group.campus_id] : []);
+      const teacherIdsInCampus = store.user_attributes.filter(a => groupCampusIds.includes(a.campus_id)).map(a => a.user_id);
+      const teacherIdsInAccess = store.user_access.filter(a => groupCampusIds.includes(a.campus_id)).map(a => a.user_id);
+      const groupMemberIds = memberships.map(m => m.user_id);
+
+      campusTeachers = store.users.filter(u => u.status === 'ACTIVE' && (
+        groupCampusIds.includes(u.campus_id) ||
+        teacherIdsInCampus.includes(u.id) ||
+        teacherIdsInAccess.includes(u.id) ||
+        groupMemberIds.includes(u.id)
+      )).map(u => {
+        const camp = store.campuses.find(c => c.id === u.campus_id);
+        const uAttrs = store.user_attributes.filter(a => a.user_id === u.id);
+        const deptAttr = uAttrs.find(a => store.master_values.some(m => m.id === a.master_value_id && m.master_type === 'DEPARTMENT'));
+        const desigAttr = uAttrs.find(a => store.master_values.some(m => m.id === a.master_value_id && m.master_type === 'DESIGNATION'));
+        const dept = deptAttr ? store.master_values.find(m => m.id === deptAttr.master_value_id) : null;
+        const desig = desigAttr ? store.master_values.find(m => m.id === desigAttr.master_value_id) : null;
+        return {
+          id: u.id,
+          display_name: u.display_name,
+          email: u.email,
+          employee_code: u.employee_code,
+          campus_name: camp ? camp.name : '',
+          department_name: dept ? dept.name : '',
+          designation_name: desig ? desig.name : ''
+        };
+      });
     } else {
       const gRes = await db.query('SELECT * FROM groups WHERE id = $1', [groupId]);
       group = gRes.rows[0];
@@ -1576,13 +1630,28 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
       const mRes = await db.query('SELECT * FROM group_memberships WHERE group_id = $1', [groupId]);
       memberships = mRes.rows;
 
+      let groupCampusIds = [];
+      if (group.campus_ids) {
+        groupCampusIds = typeof group.campus_ids === 'string' ? JSON.parse(group.campus_ids) : group.campus_ids;
+      }
+      if (!groupCampusIds || groupCampusIds.length === 0) {
+        groupCampusIds = group.campus_id ? [group.campus_id] : [];
+      }
+
       const tRes = await db.query(`
-        SELECT DISTINCT u.id, u.display_name, u.email, u.employee_code
+        SELECT DISTINCT ON (u.id) u.id, u.display_name, u.email, u.employee_code,
+          COALESCE(c.name, '') as campus_name,
+          (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DEPARTMENT' LIMIT 1) as department_name,
+          (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DESIGNATION' LIMIT 1) as designation_name
         FROM users u
-        JOIN user_attributes ua ON u.id = ua.user_id
-        WHERE u.status = 'ACTIVE' AND ua.campus_id = $1
-        ORDER BY u.display_name ASC
-      `, [group.campus_id]);
+        LEFT JOIN campuses c ON u.campus_id = c.id
+        LEFT JOIN user_attributes ua ON u.id = ua.user_id
+        LEFT JOIN user_access uacc ON u.id = uacc.user_id
+        LEFT JOIN group_memberships gm ON u.id = gm.user_id AND gm.group_id = $1
+        WHERE u.status = 'ACTIVE' 
+          AND (u.campus_id = ANY($2) OR ua.campus_id = ANY($2) OR uacc.campus_id = ANY($2) OR gm.id IS NOT NULL)
+        ORDER BY u.id, u.display_name ASC
+      `, [groupId, groupCampusIds]);
       campusTeachers = tRes.rows;
     }
 
@@ -1596,6 +1665,9 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
         display_name: t.display_name,
         email: t.email,
         employee_code: t.employee_code,
+        campus_name: t.campus_name,
+        department_name: t.department_name,
+        designation_name: t.designation_name,
         status: m ? m.status : 'NOT_MEMBER',
         membership_role: m ? m.membership_role : 'MEMBER',
         is_member: m ? m.status === 'APPROVED' : false
@@ -1612,7 +1684,7 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
 router.post('/groups/:id/members', auth.requirePermission('groups.manage_members'), async (req, res) => {
   try {
     const groupId = req.params.id;
-    const { members = [] } = req.body; // members: [{ user_id, membership_role: 'MEMBER'|'GROUP_ADMIN' }]
+    const { members = [] } = req.body;
     const now = new Date();
 
     let group;
@@ -1621,21 +1693,19 @@ router.post('/groups/:id/members', auth.requirePermission('groups.manage_members
       group = store.groups.find(g => g.id === groupId);
       if (!group) return res.status(404).json({ error: 'Group not found' });
 
-      // Keep only memberships that are in the new members list or maintain pending requests not touched
-      store.group_memberships = store.group_memberships.filter(m => m.group_id !== groupId || m.status === 'PENDING');
-
-      for (const m of members) {
+      store.group_memberships = store.group_memberships.filter(m => m.group_id !== groupId);
+      for (const item of members) {
         store.group_memberships.push({
           id: uuidv4(),
           group_id: groupId,
-          user_id: m.user_id,
-          membership_role: m.membership_role || 'MEMBER',
+          user_id: item.user_id,
+          membership_role: item.membership_role || 'MEMBER',
           status: 'APPROVED',
           requested_at: now,
           requested_by: req.user.id,
           reviewed_at: now,
           reviewed_by: req.user.id,
-          review_notes: 'Manager Assignment',
+          review_notes: 'Managed via Group Members Admin Tool',
           created_at: now,
           updated_at: now
         });
@@ -1646,15 +1716,13 @@ router.post('/groups/:id/members', auth.requirePermission('groups.manage_members
       if (!group) return res.status(404).json({ error: 'Group not found' });
 
       await db.transaction(async (client) => {
-        await client.query(`DELETE FROM group_memberships WHERE group_id = $1 AND status != 'PENDING'`, [groupId]);
-
-        for (const m of members) {
+        await client.query('DELETE FROM group_memberships WHERE group_id = $1', [groupId]);
+        for (const item of members) {
           await client.query(`
             INSERT INTO group_memberships (id, group_id, user_id, membership_role, status, requested_at, requested_by, reviewed_at, reviewed_by, review_notes)
-            VALUES ($1, $2, $3, $4, 'APPROVED', NOW(), $5, NOW(), $5, 'Manager Assignment')
-            ON CONFLICT (group_id, user_id)
-            DO UPDATE SET membership_role = $4, status = 'APPROVED', reviewed_at = NOW(), reviewed_by = $5
-          `, [uuidv4(), groupId, m.user_id, m.membership_role || 'MEMBER', req.user.id]);
+            VALUES ($1, $2, $3, $4, 'APPROVED', NOW(), $5, NOW(), $5, 'Managed via Group Members Admin Tool')
+            ON CONFLICT (group_id, user_id) DO NOTHING
+          `, [uuidv4(), groupId, item.user_id, item.membership_role || 'MEMBER', req.user.id]);
         }
       });
     }
@@ -1662,10 +1730,10 @@ router.post('/groups/:id/members', auth.requirePermission('groups.manage_members
     await services.logAudit({
       userId: req.user.id,
       campusId: group.campus_id,
-      action: 'GROUP_UPDATED',
+      action: 'GROUP_MEMBERSHIP_UPDATED',
       entityType: 'GROUP',
       entityId: groupId,
-      description: `Updated member roster for group "${group.name}" (${members.length} members).`,
+      description: `Updated group "${group.name}" memberships. Total approved members: ${members.length}`,
       ipAddress: req.ip
     });
 
@@ -1678,63 +1746,67 @@ router.post('/groups/:id/members', auth.requirePermission('groups.manage_members
 router.post('/groups/:id/join', auth.requireAuth, async (req, res) => {
   try {
     const groupId = req.params.id;
-    const userId = req.user.id;
+    let group;
     const now = new Date();
 
-    let group;
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
       group = store.groups.find(g => g.id === groupId);
       if (!group) return res.status(404).json({ error: 'Group not found' });
       if (!group.allow_join_requests) return res.status(400).json({ error: 'Group does not accept join requests' });
 
-      const existing = store.group_memberships.find(m => m.group_id === groupId && m.user_id === userId);
+      const existing = store.group_memberships.find(m => m.group_id === groupId && m.user_id === req.user.id);
       if (existing) {
-        if (existing.status === 'APPROVED') return res.status(400).json({ error: 'You are already an approved member of this group' });
-        if (existing.status === 'PENDING') return res.status(400).json({ error: 'You already have a pending request for this group' });
-        existing.status = 'PENDING';
-        existing.requested_at = now;
-      } else {
-        store.group_memberships.push({
-          id: uuidv4(),
-          group_id: groupId,
-          user_id: userId,
-          membership_role: 'MEMBER',
-          status: 'PENDING',
-          requested_at: now,
-          requested_by: userId,
-          reviewed_at: null,
-          reviewed_by: null,
-          review_notes: null,
-          created_at: now,
-          updated_at: now
-        });
+        if (existing.status === 'APPROVED') return res.status(400).json({ error: 'You are already a member of this group' });
+        if (existing.status === 'PENDING') return res.status(400).json({ error: 'Join request already submitted and pending review' });
       }
+
+      const membershipId = uuidv4();
+      store.group_memberships.push({
+        id: membershipId,
+        group_id: groupId,
+        user_id: req.user.id,
+        membership_role: 'MEMBER',
+        status: 'PENDING',
+        requested_at: now,
+        requested_by: req.user.id,
+        reviewed_at: null,
+        reviewed_by: null,
+        review_notes: null,
+        created_at: now,
+        updated_at: now
+      });
     } else {
       const gRes = await db.query('SELECT * FROM groups WHERE id = $1', [groupId]);
       group = gRes.rows[0];
       if (!group) return res.status(404).json({ error: 'Group not found' });
       if (!group.allow_join_requests) return res.status(400).json({ error: 'Group does not accept join requests' });
 
+      const existing = await db.query('SELECT status FROM group_memberships WHERE group_id = $1 AND user_id = $2', [groupId, req.user.id]);
+      if (existing.rows.length > 0) {
+        const st = existing.rows[0].status;
+        if (st === 'APPROVED') return res.status(400).json({ error: 'You are already a member of this group' });
+        if (st === 'PENDING') return res.status(400).json({ error: 'Join request already submitted and pending review' });
+      }
+
       await db.query(`
         INSERT INTO group_memberships (id, group_id, user_id, membership_role, status, requested_at, requested_by)
         VALUES ($1, $2, $3, 'MEMBER', 'PENDING', NOW(), $3)
-        ON CONFLICT (group_id, user_id) 
-        DO UPDATE SET status = 'PENDING', requested_at = NOW() WHERE group_memberships.status IN ('REJECTED', 'REMOVED')
-      `, [uuidv4(), groupId, userId]);
+        ON CONFLICT (group_id, user_id) DO UPDATE SET status = 'PENDING', requested_at = NOW()
+      `, [uuidv4(), groupId, req.user.id]);
     }
 
     await services.logAudit({
-      userId,
+      userId: req.user.id,
       campusId: group.campus_id,
       action: 'GROUP_JOIN_REQUESTED',
       entityType: 'GROUP',
       entityId: groupId,
-      description: `User ${req.user.display_name} requested to join group "${group.name}".`,
+      description: `User requested to join group "${group.name}".`,
       ipAddress: req.ip
     });
 
-    res.json({ success: true, message: 'Group join request submitted successfully' });
+    res.json({ success: true, message: 'Join request submitted for administrative review' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1765,22 +1837,26 @@ router.get('/group-requests', auth.requirePermission('groups.approve_requests'),
       });
 
       if (!req.user.isSuperAdmin) {
-        requests = requests.filter(r => req.user.authorizedCampusIds.includes(r.campus_id));
+        requests = requests.filter(r => {
+          const g = store.groups.find(grp => grp.id === r.group_id);
+          const gCids = g ? (Array.isArray(g.campus_ids) ? g.campus_ids : (g.campus_id ? [g.campus_id] : [])) : [];
+          return gCids.some(cid => req.user.authorizedCampusIds.includes(cid));
+        });
       }
     } else {
       let q = `
         SELECT gm.id, gm.group_id, g.name as group_name, gm.user_id, u.display_name as teacher_name, u.email as teacher_email,
-        g.campus_id, c.name as campus_name, gm.status, gm.requested_at
+        g.campus_id, COALESCE(c.name, '') as campus_name, gm.status, gm.requested_at
         FROM group_memberships gm
         JOIN groups g ON gm.group_id = g.id
         JOIN users u ON gm.user_id = u.id
-        JOIN campuses c ON g.campus_id = c.id
+        LEFT JOIN campuses c ON g.campus_id = c.id
         WHERE gm.status = 'PENDING'
       `;
       const p = [];
       if (!req.user.isSuperAdmin) {
         p.push(req.user.authorizedCampusIds || []);
-        q += ` AND g.campus_id = ANY($${p.length})`;
+        q += ` AND (g.campus_id = ANY($${p.length}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($${p.length})))`;
       }
       q += ' ORDER BY gm.requested_at DESC';
       const result = await db.query(q, p);
@@ -1847,14 +1923,17 @@ router.get('/group-requests/pending-count', auth.requireAuth, async (req, res) =
         if (m.status !== 'PENDING') return false;
         const g = store.groups.find(grp => grp.id === m.group_id);
         if (!g) return false;
-        if (!req.user.isSuperAdmin && !req.user.authorizedCampusIds.includes(g.campus_id)) return false;
+        if (!req.user.isSuperAdmin) {
+          const gCids = Array.isArray(g.campus_ids) ? g.campus_ids : (g.campus_id ? [g.campus_id] : []);
+          if (!gCids.some(cid => req.user.authorizedCampusIds.includes(cid))) return false;
+        }
         return true;
       });
       count = list.length;
     } else {
       const q = req.user.isSuperAdmin
         ? `SELECT COUNT(*) FROM group_memberships gm JOIN groups g ON gm.group_id = g.id WHERE gm.status = 'PENDING'`
-        : `SELECT COUNT(*) FROM group_memberships gm JOIN groups g ON gm.group_id = g.id WHERE gm.status = 'PENDING' AND g.campus_id = ANY($1)`;
+        : `SELECT COUNT(*) FROM group_memberships gm JOIN groups g ON gm.group_id = g.id WHERE gm.status = 'PENDING' AND (g.campus_id = ANY($1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($1)))`;
       const p = req.user.isSuperAdmin ? [] : [req.user.authorizedCampusIds || []];
       const result = await db.query(q, p);
       count = parseInt(result.rows[0].count, 10);

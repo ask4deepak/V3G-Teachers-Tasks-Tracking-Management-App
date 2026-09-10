@@ -3853,13 +3853,14 @@ window._groupBuilderState = {
   designations: [],
   subjects: [],
   categories: [],
-  selectedCampusId: '',
+  selectedCampusIds: [],
   audienceRules: {
     departments: [],
     designations: [],
     subjects: [],
     categories: [],
-    class_teacher_status: ''
+    class_teacher_status: null,
+    operator: 'AND'
   },
   searchQuery: '',
   teachers: [],
@@ -3876,7 +3877,7 @@ async function openCreateGroupModal() {
   ]);
 
   const activeCampuses = (campuses || []).filter(c => c.status === 'ACTIVE');
-  const initialCampusId = activeCampuses.length > 0 ? activeCampuses[0].id : '';
+  const initialCampusIds = activeCampuses.map(c => c.id);
 
   window._groupBuilderState = {
     campuses: activeCampuses,
@@ -3884,13 +3885,14 @@ async function openCreateGroupModal() {
     designations: desigs || [],
     subjects: subjs || [],
     categories: cats || [],
-    selectedCampusId: initialCampusId,
+    selectedCampusIds: initialCampusIds,
     audienceRules: {
       departments: [],
       designations: [],
       subjects: [],
       categories: [],
-      class_teacher_status: ''
+      class_teacher_status: null,
+      operator: 'AND'
     },
     searchQuery: '',
     teachers: [],
@@ -3901,98 +3903,181 @@ async function openCreateGroupModal() {
     <div class="card-header">
       <div>
         <h3><i class="fa-solid fa-users-rectangle text-primary"></i> Create Faculty Group</h3>
-        <span style="font-size:0.85rem; color:var(--text-muted);">Target campus teachers, filter by department/designation/subjects, and assign members</span>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Target multiple campuses, filter by department/designation/subjects, and assign members</span>
       </div>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <div class="card-body" style="max-height: 80vh; overflow-y: auto;">
       <form id="form-create-group" onsubmit="handleCreateGroupWithFilters(event)">
         
-        <!-- Step 1: Basic Information & Campus -->
+        <!-- Step 1: Basic Information -->
         <div style="background:var(--border-subtle); padding:16px; border-radius:var(--radius-md); margin-bottom:18px;">
-          <h4 style="margin:0 0 12px; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-info-circle text-primary"></i> 1. Group Details & Campus</h4>
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
-            <div class="form-group" style="margin-bottom:0;">
-              <label>Group Name <span class="text-danger">*</span></label>
-              <input type="text" name="name" class="form-input" required placeholder="e.g. Science Faculty Forum" />
-            </div>
-            <div class="form-group" style="margin-bottom:0;">
-              <label>Target Campus <span class="text-danger">*</span></label>
-              <select name="campus_id" id="gb-campus-select" class="form-select" required onchange="handleGroupBuilderCampusChange(this.value)">
-                ${activeCampuses.map(c => `<option value="${c.id}" ${c.id === initialCampusId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-              </select>
-            </div>
+          <h4 style="margin:0 0 12px; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-info-circle text-primary"></i> 1. Group Details</h4>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label>Group Name <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-input" required placeholder="e.g. Senior Secondary Science Faculty Forum" />
           </div>
-          <div class="form-group" style="margin-top:12px; margin-bottom:0;">
+          <div class="form-group" style="margin-bottom:12px;">
             <label>Description</label>
-            <textarea name="description" class="form-textarea" rows="2" placeholder="State the purpose or goals of this group..."></textarea>
+            <textarea name="description" class="form-textarea" rows="2" placeholder="State the purpose, scope, or collaboration goals of this group..."></textarea>
           </div>
-          <div class="form-group" style="margin-top:10px; margin-bottom:0;">
+          <div class="form-group" style="margin-bottom:0;">
             <label class="checkbox-label">
               <input type="checkbox" name="allow_join_requests" value="true" checked />
-              Allow campus teachers to discover and request to join this group
+              Allow teachers from selected campuses to discover and request to join this group
             </label>
           </div>
         </div>
 
-        <!-- Step 2: Audience Filter Rules (Optional like Task Builder) -->
+        <!-- Step 2: Target Campuses Multi-Selection -->
+        <div style="border:1px solid var(--border-color); padding:16px; border-radius:var(--radius-md); margin-bottom:18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-school text-primary"></i> 2. Target Campuses <span class="text-danger">*</span></h4>
+            <div style="font-size:0.8rem;">
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_campuses', true)">Select All</button>
+              <span style="color:var(--text-muted);">|</span>
+              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_campuses', false)">Clear</button>
+            </div>
+          </div>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:10px;">
+            Select one or more campuses associated with this group. Teachers from any of the selected campuses can be added or request membership.
+          </p>
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:8px;">
+            ${activeCampuses.map(c => `
+              <label class="checkbox-label" style="background:var(--bg-surface); padding:8px 12px; border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+                <input type="checkbox" name="gb_campuses" value="${c.id}" checked onchange="handleGbAudienceChange()" />
+                <strong>${escapeHtml(c.name)}</strong>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Step 3: Audience Filter Rules Multi-Selection (like Task Builder) -->
         <div style="border:1px solid var(--border-color); padding:16px; border-radius:var(--radius-md); margin-bottom:18px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-filter text-primary"></i> 2. Target Audience Criteria Filters</h4>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="resetGroupBuilderFilters()">
-              <i class="fa-solid fa-rotate-left"></i> Reset Filters
+            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-filter text-primary"></i> 3. Target Audience Criteria Filters</h4>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="resetGbAudienceFilters()">
+              <i class="fa-solid fa-rotate-left"></i> Reset All Filters
             </button>
           </div>
-          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:12px;">
-            Filter candidate campus teachers before adding them to this group. Leaving filters empty includes all campus teachers.
-          </p>
+          
+          <!-- Combination Operator -->
+          <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:10px 14px; margin-bottom:14px; display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
+            <span style="font-size:0.85rem; font-weight:600; color:var(--text-primary);"><i class="fa-solid fa-code-fork text-primary"></i> Criteria Operator:</span>
+            <label class="radio-label" style="display:inline-flex; align-items:center; gap:6px; font-size:0.85rem; cursor:pointer;">
+              <input type="radio" name="gb_operator" value="AND" checked onchange="handleGbAudienceChange()" />
+              <span><strong>AND Logic</strong> (Matches all selected categories)</span>
+            </label>
+            <label class="radio-label" style="display:inline-flex; align-items:center; gap:6px; font-size:0.85rem; cursor:pointer;">
+              <input type="radio" name="gb_operator" value="OR" onchange="handleGbAudienceChange()" />
+              <span><strong>OR Logic</strong> (Matches any selected category)</span>
+            </label>
+          </div>
 
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:12px;">
-            <div>
-              <label style="font-size:0.8rem; font-weight:600;">Department</label>
-              <select id="gb-filter-dept" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
-                <option value="">All Departments</option>
-                ${(depts || []).map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('')}
-              </select>
+          <!-- Departments Multi-select -->
+          <div class="form-group" style="margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <label style="margin:0; font-size:0.85rem; font-weight:600;">Departments</label>
+              <div style="font-size:0.8rem;">
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_depts', true)">Select All</button>
+                <span style="color:var(--text-muted);">|</span>
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_depts', false)">Clear</button>
+              </div>
             </div>
-            <div>
-              <label style="font-size:0.8rem; font-weight:600;">Designation</label>
-              <select id="gb-filter-desig" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
-                <option value="">All Designations</option>
-                ${(desigs || []).map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('')}
-              </select>
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px; max-height:130px; overflow-y:auto; background:var(--bg-surface); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+              ${depts.map(d => `
+                <label class="checkbox-label" style="font-size:0.82rem;">
+                  <input type="checkbox" name="gb_depts" value="${d.id}" onchange="handleGbAudienceChange()" />
+                  ${escapeHtml(d.name)}
+                </label>
+              `).join('')}
             </div>
-            <div>
-              <label style="font-size:0.8rem; font-weight:600;">Subject</label>
-              <select id="gb-filter-subj" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
-                <option value="">All Subjects</option>
-                ${(subjs || []).map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
-              </select>
+          </div>
+
+          <!-- Designations Multi-select -->
+          <div class="form-group" style="margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <label style="margin:0; font-size:0.85rem; font-weight:600;">Designations</label>
+              <div style="font-size:0.8rem;">
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_desigs', true)">Select All</button>
+                <span style="color:var(--text-muted);">|</span>
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_desigs', false)">Clear</button>
+              </div>
             </div>
-            <div>
-              <label style="font-size:0.8rem; font-weight:600;">Category</label>
-              <select id="gb-filter-cat" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
-                <option value="">All Categories</option>
-                ${(cats || []).map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
-              </select>
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px; max-height:130px; overflow-y:auto; background:var(--bg-surface); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+              ${desigs.map(d => `
+                <label class="checkbox-label" style="font-size:0.82rem;">
+                  <input type="checkbox" name="gb_desigs" value="${d.id}" onchange="handleGbAudienceChange()" />
+                  ${escapeHtml(d.name)}
+                </label>
+              `).join('')}
             </div>
-            <div>
-              <label style="font-size:0.8rem; font-weight:600;">Class Teacher Status</label>
-              <select id="gb-filter-ct" class="form-select form-select-sm" onchange="triggerGroupBuilderFilterUpdate()">
-                <option value="">All (Ignore)</option>
-                <option value="true">Class Teachers Only</option>
-                <option value="false">Non-Class Teachers Only</option>
-              </select>
+          </div>
+
+          <!-- Subjects Multi-select -->
+          <div class="form-group" style="margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <label style="margin:0; font-size:0.85rem; font-weight:600;">Subjects</label>
+              <div style="font-size:0.8rem;">
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_subjs', true)">Select All</button>
+                <span style="color:var(--text-muted);">|</span>
+                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_subjs', false)">Clear</button>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px; max-height:130px; overflow-y:auto; background:var(--bg-surface); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+              ${subjs.map(s => `
+                <label class="checkbox-label" style="font-size:0.82rem;">
+                  <input type="checkbox" name="gb_subjs" value="${s.id}" onchange="handleGbAudienceChange()" />
+                  ${escapeHtml(s.name)}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Categories Multi-select -->
+          ${cats.length > 0 ? `
+            <div class="form-group" style="margin-bottom:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <label style="margin:0; font-size:0.85rem; font-weight:600;">Categories</label>
+                <div style="font-size:0.8rem;">
+                  <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_cats', true)">Select All</button>
+                  <span style="color:var(--text-muted);">|</span>
+                  <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleGbCheckboxGroup('gb_cats', false)">Clear</button>
+                </div>
+              </div>
+              <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px; max-height:130px; overflow-y:auto; background:var(--bg-surface); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+                ${cats.map(c => `
+                  <label class="checkbox-label" style="font-size:0.82rem;">
+                    <input type="checkbox" name="gb_cats" value="${c.id}" onchange="handleGbAudienceChange()" />
+                    ${escapeHtml(c.name)}
+                  </label>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Class Teacher Status Multi-select -->
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:0.85rem; font-weight:600; margin-bottom:6px; display:block;">Class Teacher Status</label>
+            <div style="display:flex; flex-wrap:wrap; gap:16px;">
+              <label class="checkbox-label" style="font-size:0.82rem;">
+                <input type="checkbox" id="gb_ct_yes" value="true" onchange="handleGbAudienceChange()" />
+                Class Teachers Only
+              </label>
+              <label class="checkbox-label" style="font-size:0.82rem;">
+                <input type="checkbox" id="gb_ct_no" value="false" onchange="handleGbAudienceChange()" />
+                Non-Class Teachers Only
+              </label>
             </div>
           </div>
         </div>
 
-        <!-- Step 3: Candidate Teachers Selection Roster -->
+        <!-- Step 4: Candidate Teachers Selection Roster -->
         <div style="border:1px solid var(--border-color); padding:16px; border-radius:var(--radius-md);">
           <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px;">
-            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-users text-primary"></i> 3. Assign Initial Group Members</h4>
+            <h4 style="margin:0; font-size:0.95rem; color:var(--text-primary);"><i class="fa-solid fa-users text-primary"></i> 4. Assign Initial Group Members</h4>
             <div id="gb-counts-badge" style="font-size:0.85rem; font-weight:600; color:var(--primary);">
-              Loading teachers...
+              Loading candidate teachers...
             </div>
           </div>
 
@@ -4036,62 +4121,73 @@ async function openCreateGroupModal() {
   `;
   openModal(html);
 
-  // Initial load of teachers for initial campus
+  // Initial load of teachers
   await fetchAndRenderGroupBuilderTeachers();
 }
 
-async function handleGroupBuilderCampusChange(campusId) {
-  window._groupBuilderState.selectedCampusId = campusId;
-  window._groupBuilderState.selectedMembers.clear();
-  await fetchAndRenderGroupBuilderTeachers();
+function toggleGbCheckboxGroup(name, check) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach(cb => {
+    cb.checked = check;
+  });
+  handleGbAudienceChange();
 }
 
-async function triggerGroupBuilderFilterUpdate() {
-  const dept = document.getElementById('gb-filter-dept')?.value || '';
-  const desig = document.getElementById('gb-filter-desig')?.value || '';
-  const subj = document.getElementById('gb-filter-subj')?.value || '';
-  const cat = document.getElementById('gb-filter-cat')?.value || '';
-  const ct = document.getElementById('gb-filter-ct')?.value || '';
-
-  window._groupBuilderState.audienceRules = {
-    departments: dept ? [dept] : [],
-    designations: desig ? [desig] : [],
-    subjects: subj ? [subj] : [],
-    categories: cat ? [cat] : [],
-    class_teacher_status: ct === 'true' ? true : (ct === 'false' ? false : null)
-  };
-
-  await fetchAndRenderGroupBuilderTeachers();
-}
-
-function resetGroupBuilderFilters() {
-  if (document.getElementById('gb-filter-dept')) document.getElementById('gb-filter-dept').value = '';
-  if (document.getElementById('gb-filter-desig')) document.getElementById('gb-filter-desig').value = '';
-  if (document.getElementById('gb-filter-subj')) document.getElementById('gb-filter-subj').value = '';
-  if (document.getElementById('gb-filter-cat')) document.getElementById('gb-filter-cat').value = '';
-  if (document.getElementById('gb-filter-ct')) document.getElementById('gb-filter-ct').value = '';
+function resetGbAudienceFilters() {
+  ['gb_depts', 'gb_desigs', 'gb_subjs', 'gb_cats'].forEach(name => {
+    document.querySelectorAll(`input[name="${name}"]`).forEach(cb => { cb.checked = false; });
+  });
+  if (document.getElementById('gb_ct_yes')) document.getElementById('gb_ct_yes').checked = false;
+  if (document.getElementById('gb_ct_no')) document.getElementById('gb_ct_no').checked = false;
   if (document.getElementById('gb-search-input')) document.getElementById('gb-search-input').value = '';
 
+  handleGbAudienceChange();
+}
+
+async function handleGbAudienceChange() {
+  const selectedCampuses = Array.from(document.querySelectorAll('input[name="gb_campuses"]:checked')).map(cb => cb.value);
+  const depts = Array.from(document.querySelectorAll('input[name="gb_depts"]:checked')).map(cb => cb.value);
+  const desigs = Array.from(document.querySelectorAll('input[name="gb_desigs"]:checked')).map(cb => cb.value);
+  const subjs = Array.from(document.querySelectorAll('input[name="gb_subjs"]:checked')).map(cb => cb.value);
+  const cats = Array.from(document.querySelectorAll('input[name="gb_cats"]:checked')).map(cb => cb.value);
+  const operator = document.querySelector('input[name="gb_operator"]:checked')?.value || 'AND';
+
+  const ctYes = document.getElementById('gb_ct_yes')?.checked;
+  const ctNo = document.getElementById('gb_ct_no')?.checked;
+  let class_teacher_status = null;
+  if (ctYes && !ctNo) class_teacher_status = true;
+  else if (!ctYes && ctNo) class_teacher_status = false;
+
+  window._groupBuilderState.selectedCampusIds = selectedCampuses;
   window._groupBuilderState.audienceRules = {
-    departments: [],
-    designations: [],
-    subjects: [],
-    categories: [],
-    class_teacher_status: ''
+    departments: depts,
+    designations: desigs,
+    subjects: subjs,
+    categories: cats,
+    class_teacher_status,
+    operator
   };
-  window._groupBuilderState.searchQuery = '';
-  fetchAndRenderGroupBuilderTeachers();
+
+  await fetchAndRenderGroupBuilderTeachers();
 }
 
 async function fetchAndRenderGroupBuilderTeachers() {
-  const campusId = window._groupBuilderState.selectedCampusId;
-  if (!campusId) return;
+  const campusIds = window._groupBuilderState.selectedCampusIds;
+  const container = document.getElementById('gb-teachers-table-container');
+  const countsBadge = document.getElementById('gb-counts-badge');
+
+  if (!campusIds || campusIds.length === 0) {
+    if (container) {
+      container.innerHTML = `<div class="empty-state" style="padding:20px; color:var(--warning);"><i class="fa-solid fa-triangle-exclamation"></i> Please select at least one campus above to see candidate teachers.</div>`;
+    }
+    if (countsBadge) countsBadge.innerHTML = '0 campuses selected';
+    return;
+  }
 
   try {
     const res = await api('/tasks/preview-recipients', {
       method: 'POST',
       body: {
-        campus_ids: [campusId],
+        campus_ids: campusIds,
         audience_rules: window._groupBuilderState.audienceRules
       }
     });
@@ -4108,9 +4204,8 @@ async function fetchAndRenderGroupBuilderTeachers() {
 
     renderGroupBuilderTeachersTable();
   } catch (err) {
-    const container = document.getElementById('gb-teachers-table-container');
     if (container) {
-      container.innerHTML = `<div class="empty-state" style="padding:20px; color:var(--danger);"><i class="fa-solid fa-triangle-exclamation"></i> Could not load campus teachers: ${escapeHtml(err.message)}</div>`;
+      container.innerHTML = `<div class="empty-state" style="padding:20px; color:var(--danger);"><i class="fa-solid fa-triangle-exclamation"></i> Could not load candidate teachers: ${escapeHtml(err.message)}</div>`;
     }
   }
 }
@@ -4118,6 +4213,167 @@ async function fetchAndRenderGroupBuilderTeachers() {
 function handleGroupBuilderSearch(query) {
   window._groupBuilderState.searchQuery = (query || '').toLowerCase().trim();
   renderGroupBuilderTeachersTable();
+}
+
+function renderGroupBuilderTeachersTable() {
+  const container = document.getElementById('gb-teachers-table-container');
+  const countsBadge = document.getElementById('gb-counts-badge');
+  const footerCount = document.getElementById('gb-footer-selected-count');
+  if (!container) return;
+
+  const query = window._groupBuilderState.searchQuery;
+  const allTeachers = window._groupBuilderState.teachers || [];
+  const selectedMap = window._groupBuilderState.selectedMembers;
+
+  const filtered = allTeachers.filter(t => {
+    if (!query) return true;
+    const searchString = `${t.display_name} ${t.email} ${t.employee_code || ''} ${t.campus_name || ''} ${t.department_name || ''} ${t.designation_name || ''}`.toLowerCase();
+    return searchString.includes(query);
+  });
+
+  if (countsBadge) {
+    countsBadge.innerHTML = `Showing ${filtered.length} of ${allTeachers.length} teachers (${selectedMap.size} selected)`;
+  }
+  if (footerCount) {
+    footerCount.innerHTML = `<strong>${selectedMap.size}</strong> group members selected`;
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:24px;">
+        <i class="fa-solid fa-user-slash" style="font-size:1.8rem; color:var(--text-muted); margin-bottom:6px;"></i>
+        <p>No campus teachers match the current filters and search criteria.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `
+    <table class="table table-sm" style="margin:0;">
+      <thead style="position:sticky; top:0; background:var(--bg-surface); z-index:2;">
+        <tr>
+          <th style="width:40px; text-align:center;">Add?</th>
+          <th>Teacher</th>
+          <th>Emp Code</th>
+          <th>Campus / Dept / Designation</th>
+          <th style="width:140px;">Group Role</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(t => {
+          const isSelected = selectedMap.has(t.id);
+          const currentRole = selectedMap.get(t.id) || 'MEMBER';
+          return `
+            <tr>
+              <td style="text-align:center;">
+                <input type="checkbox" class="gb-teacher-cb" value="${t.id}" ${isSelected ? 'checked' : ''} onchange="toggleGroupBuilderTeacher('${t.id}', this.checked)" />
+              </td>
+              <td>
+                <strong>${escapeHtml(t.display_name)}</strong>
+                <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.email)}</div>
+              </td>
+              <td><code>${escapeHtml(t.employee_code || '—')}</code></td>
+              <td>
+                <span class="badge badge-in-progress" style="font-size:0.72rem; margin-right:4px;">${escapeHtml(t.campus_name || 'Campus')}</span>
+                <span style="font-size:0.8rem; color:var(--text-primary);">${escapeHtml(t.department_name || 'General')}</span>
+                ${t.designation_name ? `<div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(t.designation_name)}</div>` : ''}
+              </td>
+              <td>
+                <select class="form-select form-select-sm" style="font-size:0.8rem;" onchange="setGroupBuilderTeacherRole('${t.id}', this.value)" ${!isSelected ? 'disabled' : ''} id="gb-role-${t.id}">
+                  <option value="MEMBER" ${currentRole === 'MEMBER' ? 'selected' : ''}>Member</option>
+                  <option value="GROUP_ADMIN" ${currentRole === 'GROUP_ADMIN' ? 'selected' : ''}>Group Admin</option>
+                </select>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function toggleGroupBuilderTeacher(userId, checked) {
+  const roleSelect = document.getElementById(`gb-role-${userId}`);
+  if (checked) {
+    const role = roleSelect ? roleSelect.value : 'MEMBER';
+    window._groupBuilderState.selectedMembers.set(userId, role);
+    if (roleSelect) roleSelect.disabled = false;
+  } else {
+    window._groupBuilderState.selectedMembers.delete(userId);
+    if (roleSelect) roleSelect.disabled = true;
+  }
+  const footerCount = document.getElementById('gb-footer-selected-count');
+  const countsBadge = document.getElementById('gb-counts-badge');
+  const selectedSize = window._groupBuilderState.selectedMembers.size;
+  if (footerCount) footerCount.innerHTML = `<strong>${selectedSize}</strong> group members selected`;
+  if (countsBadge) {
+    countsBadge.innerHTML = `Showing ${window._groupBuilderState.teachers.length} teachers (${selectedSize} selected)`;
+  }
+}
+
+function setGroupBuilderTeacherRole(userId, role) {
+  if (window._groupBuilderState.selectedMembers.has(userId)) {
+    window._groupBuilderState.selectedMembers.set(userId, role);
+  }
+}
+
+function toggleAllGroupBuilderTeachers(check) {
+  const query = window._groupBuilderState.searchQuery;
+  const allTeachers = window._groupBuilderState.teachers || [];
+  const filtered = allTeachers.filter(t => {
+    if (!query) return true;
+    const searchString = `${t.display_name} ${t.email} ${t.employee_code || ''} ${t.campus_name || ''} ${t.department_name || ''} ${t.designation_name || ''}`.toLowerCase();
+    return searchString.includes(query);
+  });
+
+  filtered.forEach(t => {
+    if (check) {
+      if (!window._groupBuilderState.selectedMembers.has(t.id)) {
+        window._groupBuilderState.selectedMembers.set(t.id, 'MEMBER');
+      }
+    } else {
+      window._groupBuilderState.selectedMembers.delete(t.id);
+    }
+  });
+
+  renderGroupBuilderTeachersTable();
+}
+
+async function handleCreateGroupWithFilters(event) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const name = (formData.get('name') || '').trim();
+  const description = (formData.get('description') || '').trim();
+  const campus_ids = Array.from(document.querySelectorAll('input[name="gb_campuses"]:checked')).map(cb => cb.value);
+  const allow_join_requests = formData.get('allow_join_requests') === 'true';
+
+  if (!name || campus_ids.length === 0) {
+    return showToast('Group name and at least one campus are required', 'warning');
+  }
+
+  const member_ids = Array.from(window._groupBuilderState.selectedMembers.entries()).map(([userId, role]) => ({
+    userId,
+    role
+  }));
+
+  try {
+    await api('/groups', {
+      method: 'POST',
+      body: {
+        name,
+        description,
+        campus_ids,
+        campus_id: campus_ids[0],
+        allow_join_requests,
+        member_ids
+      }
+    });
+    showToast(`Faculty Group "${name}" created successfully with ${member_ids.length} members across ${campus_ids.length} campuses!`, 'success');
+    closeModal();
+    loadCurrentView();
+  } catch (err) {
+    // Handled in api wrapper
+  }
 }
 
 function renderGroupBuilderTeachersTable() {

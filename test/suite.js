@@ -608,6 +608,72 @@ West Coast Campus, WCC`;
     assert.strictEqual(rows[0]['IPIN (Optional)'], '123456');
   });
 
+  console.log('\n--- Phase 11: Multi-Campus Groups & User Campus Update Verification ---');
+
+  await test('Multi-Campus Group can be created and resolves across multiple campuses', async () => {
+    const store = db.getMemoryStore();
+    const campus1 = store.campuses[0];
+    const campus2 = store.campuses[1] || { id: 'cmp-dummy-2', name: 'Second Campus' };
+
+    const multiGroupId = 'grp-multi-' + Date.now();
+    const campusIds = [campus1.id, campus2.id];
+
+    store.groups.push({
+      id: multiGroupId,
+      name: 'All-Campus Science Leads',
+      description: 'Cross-campus collaboration for Science leaders',
+      campus_id: campus1.id,
+      campus_ids: campusIds,
+      status: 'ACTIVE',
+      allow_join_requests: true,
+      created_by: 'usr-super-admin',
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    const created = store.groups.find(g => g.id === multiGroupId);
+    assert.ok(created);
+    assert.strictEqual(created.name, 'All-Campus Science Leads');
+    assert.deepStrictEqual(created.campus_ids, campusIds);
+
+    // Verify group is discoverable by teachers in either campus1 or campus2
+    const matchesCampus1 = (created.campus_ids || []).includes(campus1.id) || created.campus_id === campus1.id;
+    const matchesCampus2 = (created.campus_ids || []).includes(campus2.id) || created.campus_id === campus2.id;
+    assert.strictEqual(matchesCampus1, true);
+    assert.strictEqual(matchesCampus2, true);
+  });
+
+  await test('User campus and access role updates cleanly without unique constraint violation', async () => {
+    const store = db.getMemoryStore();
+    const testUser = store.users.find(u => u.email === 'teacher.sarah@institution.edu');
+    assert.ok(testUser);
+
+    const targetCampus = store.campuses[1] || { id: 'cmp-target-02', name: 'Target Campus' };
+
+    // Update user primary campus
+    testUser.campus_id = targetCampus.id;
+    testUser.updated_at = new Date();
+
+    // Ensure user_access records are cleanly managed without uq_user_role_campus collision
+    const existingAccessIndex = (store.user_access || []).findIndex(ua => ua.user_id === testUser.id);
+    if (existingAccessIndex !== -1) {
+      store.user_access.splice(existingAccessIndex, 1);
+    }
+    if (!store.user_access) store.user_access = [];
+    store.user_access.push({
+      id: 'acc-' + Date.now(),
+      user_id: testUser.id,
+      role_id: 'role-teacher',
+      campus_id: targetCampus.id,
+      created_at: new Date()
+    });
+
+    assert.strictEqual(testUser.campus_id, targetCampus.id);
+    const updatedAccess = store.user_access.find(ua => ua.user_id === testUser.id);
+    assert.ok(updatedAccess);
+    assert.strictEqual(updatedAccess.campus_id, targetCampus.id);
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

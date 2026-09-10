@@ -205,6 +205,7 @@ async function initDb() {
       // Run any incremental alter migrations
       await pool.query(`
         ALTER TABLE users ADD COLUMN IF NOT EXISTS campus_id UUID REFERENCES campuses(id) ON DELETE SET NULL;
+        ALTER TABLE groups ADD COLUMN IF NOT EXISTS campus_ids JSONB DEFAULT '[]'::jsonb;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_edit_submission BOOLEAN NOT NULL DEFAULT FALSE;
