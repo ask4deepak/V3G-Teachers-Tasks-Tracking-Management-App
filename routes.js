@@ -1419,7 +1419,16 @@ router.get('/groups', auth.requireAuth, async (req, res) => {
       }
     } else {
       let q = `
-        SELECT g.*, COALESCE(c.name, '') as campus_name,
+        SELECT g.*, 
+        COALESCE(
+          (SELECT string_agg(cp.name, ', ' ORDER BY cp.name) 
+           FROM campuses cp 
+           WHERE cp.id::text = g.campus_id::text 
+              OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = cp.id::text)
+          ), 
+          c.name, 
+          ''
+        ) as campus_name,
         (SELECT COUNT(*) FROM group_memberships gm WHERE gm.group_id = g.id AND gm.status = 'APPROVED') as member_count,
         (SELECT gm.status FROM group_memberships gm WHERE gm.group_id = g.id AND gm.user_id = $1) as user_membership_status,
         (SELECT gm.membership_role FROM group_memberships gm WHERE gm.group_id = g.id AND gm.user_id = $1) as user_membership_role
@@ -1431,11 +1440,11 @@ router.get('/groups', auth.requireAuth, async (req, res) => {
 
       if (!req.user.isSuperAdmin) {
         p.push(req.user.authorizedCampusIds || []);
-        q += ` AND (g.campus_id = ANY($${p.length}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($${p.length})))`;
+        q += ` AND (g.campus_id::text = ANY($${p.length}::text[]) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($${p.length}::text[])))`;
       }
       if (campus_id) {
         p.push(campus_id);
-        q += ` AND (g.campus_id = $${p.length} OR COALESCE(g.campus_ids, '[]'::jsonb) ? $${p.length})`;
+        q += ` AND (g.campus_id::text = $${p.length}::text OR COALESCE(g.campus_ids, '[]'::jsonb) ? $${p.length}::text)`;
       }
       q += ' ORDER BY g.name ASC';
       const result = await db.query(q, p);
@@ -1649,9 +1658,9 @@ router.get('/groups/:id/members', auth.requireAuth, async (req, res) => {
         LEFT JOIN user_access uacc ON u.id = uacc.user_id
         LEFT JOIN group_memberships gm ON u.id = gm.user_id AND gm.group_id = $1
         WHERE u.status = 'ACTIVE' 
-          AND (u.campus_id = ANY($2) OR ua.campus_id = ANY($2) OR uacc.campus_id = ANY($2) OR gm.id IS NOT NULL)
+          AND (u.campus_id::text = ANY($2::text[]) OR ua.campus_id::text = ANY($2::text[]) OR uacc.campus_id::text = ANY($2::text[]) OR gm.id IS NOT NULL)
         ORDER BY u.id, u.display_name ASC
-      `, [groupId, groupCampusIds]);
+      `, [groupId, groupCampusIds.length > 0 ? groupCampusIds : ['00000000-0000-0000-0000-000000000000']]);
       campusTeachers = tRes.rows;
     }
 
@@ -1856,7 +1865,7 @@ router.get('/group-requests', auth.requirePermission('groups.approve_requests'),
       const p = [];
       if (!req.user.isSuperAdmin) {
         p.push(req.user.authorizedCampusIds || []);
-        q += ` AND (g.campus_id = ANY($${p.length}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($${p.length})))`;
+        q += ` AND (g.campus_id::text = ANY($${p.length}::text[]) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($${p.length}::text[])))`;
       }
       q += ' ORDER BY gm.requested_at DESC';
       const result = await db.query(q, p);
@@ -1933,7 +1942,7 @@ router.get('/group-requests/pending-count', auth.requireAuth, async (req, res) =
     } else {
       const q = req.user.isSuperAdmin
         ? `SELECT COUNT(*) FROM group_memberships gm JOIN groups g ON gm.group_id = g.id WHERE gm.status = 'PENDING'`
-        : `SELECT COUNT(*) FROM group_memberships gm JOIN groups g ON gm.group_id = g.id WHERE gm.status = 'PENDING' AND (g.campus_id = ANY($1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($1)))`;
+        : `SELECT COUNT(*) FROM group_memberships gm JOIN groups g ON gm.group_id = g.id WHERE gm.status = 'PENDING' AND (g.campus_id::text = ANY($1::text[]) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.campus_ids, '[]'::jsonb)) elem WHERE elem = ANY($1::text[])))`;
       const p = req.user.isSuperAdmin ? [] : [req.user.authorizedCampusIds || []];
       const result = await db.query(q, p);
       count = parseInt(result.rows[0].count, 10);
