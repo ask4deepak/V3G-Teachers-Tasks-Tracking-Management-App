@@ -108,10 +108,8 @@ router.post('/auth/reset-ipin-request', async (req, res) => {
     });
 
     // Dispatch verification email
-    const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
     try {
       await services.dispatchMail({
-        from,
         to: user.email,
         subject: `Your TaskTrack IPIN Reset Code: ${otp}`,
         html: `
@@ -133,7 +131,11 @@ router.post('/auth/reset-ipin-request', async (req, res) => {
         `
       });
     } catch (mailErr) {
-      console.warn(`[IPIN Reset] Email dispatch failed:`, mailErr.message);
+      console.error(`[IPIN Reset] Email dispatch failed:`, mailErr.message);
+      ipinResetStore.delete(cleanEmail);
+      return res.status(500).json({
+        error: `Could not send verification email: ${mailErr.message}. Please verify Google Cloud OAuth2 credentials or SMTP configuration.`
+      });
     }
 
     await services.logAudit({
@@ -3615,6 +3617,70 @@ router.post('/admin/test-email', auth.requireAuth, async (req, res) => {
       error: `Failed to send test email: ${err.message}`,
       hint: 'For Gmail / Google Workspace: 1. Enable 2-Step Verification on your account. 2. Generate a 16-character App Password at https://myaccount.google.com/apppasswords. 3. Enter the 16-char App Password into SMTP_PASS (not your login password).'
     });
+  }
+});
+
+// ============================================================================
+// 13. SYSTEM SETTINGS MANAGEMENT ROUTES
+// ============================================================================
+
+router.get('/settings', async (req, res) => {
+  try {
+    const settings = await db.getSystemSettings();
+    const isSuperAdmin = req.session && req.session.user && (req.session.user.isSuperAdmin || req.session.user.user_type === 'SUPER_ADMIN');
+
+    if (!isSuperAdmin) {
+      // Mask sensitive credentials for non-super-admins
+      const publicSettings = { ...settings };
+      if (publicSettings.google_client_secret) publicSettings.google_client_secret = '••••••••••••••••';
+      if (publicSettings.google_refresh_token) publicSettings.google_refresh_token = '••••••••••••••••';
+      return res.json(publicSettings);
+    }
+
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/settings', auth.requireAuth, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && req.user.user_type !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Only Super Administrators can modify System Settings.' });
+    }
+
+    const currentSettings = await db.getSystemSettings();
+    const updates = { ...req.body };
+
+    // Don't overwrite secret/refresh token if sent as masked placeholder
+    if (updates.google_client_secret === '••••••••••••••••') {
+      delete updates.google_client_secret;
+    }
+    if (updates.google_refresh_token === '••••••••••••••••') {
+      delete updates.google_refresh_token;
+    }
+
+    const updated = await db.updateSystemSettings(updates, req.user.id);
+    services.resetEmailTransporter();
+
+    await services.logAudit({
+      userId: req.user.id,
+      campusId: null,
+      action: 'SETTINGS_UPDATED',
+      entityType: 'SYSTEM',
+      entityId: req.user.id,
+      description: `System settings updated by ${req.user.display_name}.`,
+      metadata: updates,
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: 'System settings successfully updated.',
+      settings: updated
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -508,6 +508,23 @@ West Coast Campus, WCC`;
     );
   });
 
+  console.log('\n--- Phase 9: System Settings & Timezone Configuration ---');
+
+  await test('System Settings returns default Asia/Kolkata timezone and 24-hour deadline offset', async () => {
+    const settings = await db.getSystemSettings();
+    assert.strictEqual(settings.timezone, 'Asia/Kolkata');
+    assert.strictEqual(settings.default_deadline_offset_hours, '24');
+    assert.strictEqual(settings.app_name, 'TaskTrack Pro');
+
+    // Update settings
+    const updated = await db.updateSystemSettings({
+      app_name: 'SRBPS TaskTrack Pro',
+      default_deadline_offset_hours: '48'
+    });
+    assert.strictEqual(updated.app_name, 'SRBPS TaskTrack Pro');
+    assert.strictEqual(updated.default_deadline_offset_hours, '48');
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

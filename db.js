@@ -29,7 +29,8 @@ const memoryStore = {
   assignments: [],
   submissions: [],
   audit_logs: [],
-  session: []
+  session: [],
+  system_settings: []
 };
 
 // Seed In-Memory Database
@@ -161,6 +162,24 @@ async function seedMemoryStore() {
   memoryStore.assignments = [];
   memoryStore.submissions = [];
 
+  // Default System Settings
+  const now = new Date();
+  memoryStore.system_settings = [
+    { key: 'app_name', value: 'TaskTrack Pro', updated_at: now },
+    { key: 'app_subtitle', value: 'Teacher Task, Workflow & Performance Portal', updated_at: now },
+    { key: 'timezone', value: 'Asia/Kolkata', updated_at: now },
+    { key: 'session_expiry_hours', value: '24', updated_at: now },
+    { key: 'default_deadline_offset_hours', value: '24', updated_at: now },
+    { key: 'email_from_name', value: 'TaskTrack Operations', updated_at: now },
+    { key: 'email_from_address', value: 'contact@srbps.com', updated_at: now },
+    { key: 'academic_session', value: '2026-2027', updated_at: now },
+    { key: 'allow_late_submissions_default', value: 'true', updated_at: now },
+    { key: 'allow_edit_submission_default', value: 'false', updated_at: now },
+    { key: 'google_client_id', value: process.env.GOOGLE_CLIENT_ID || '', updated_at: now },
+    { key: 'google_client_secret', value: process.env.GOOGLE_CLIENT_SECRET || '', updated_at: now },
+    { key: 'google_refresh_token', value: process.env.GOOGLE_REFRESH_TOKEN || '', updated_at: now }
+  ];
+
   console.log('[Database] In-memory store initialized with clean state and Super-Admin (ask4deepak@gmail.com).');
 }
 
@@ -190,6 +209,14 @@ async function initDb() {
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_edit_submission BOOLEAN NOT NULL DEFAULT FALSE;
 
+        CREATE TABLE IF NOT EXISTS system_settings (
+          key VARCHAR(100) PRIMARY KEY,
+          value TEXT NOT NULL,
+          description TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_by UUID REFERENCES users(id) ON DELETE SET NULL
+        );
+
         -- Backfill users.campus_id if unpopulated
         UPDATE users u
         SET campus_id = COALESCE(
@@ -198,6 +225,28 @@ async function initDb() {
         )
         WHERE u.campus_id IS NULL;
       `);
+
+      // Seed default system settings
+      const defaultSettings = [
+        ['app_name', 'TaskTrack Pro'],
+        ['app_subtitle', 'Teacher Task, Workflow & Performance Portal'],
+        ['timezone', 'Asia/Kolkata'],
+        ['session_expiry_hours', '24'],
+        ['default_deadline_offset_hours', '24'],
+        ['email_from_name', 'TaskTrack Operations'],
+        ['email_from_address', 'contact@srbps.com'],
+        ['academic_session', '2026-2027'],
+        ['allow_late_submissions_default', 'true'],
+        ['allow_edit_submission_default', 'false']
+      ];
+
+      for (const [sKey, sVal] of defaultSettings) {
+        await pool.query(`
+          INSERT INTO system_settings (key, value)
+          VALUES ($1, $2)
+          ON CONFLICT (key) DO NOTHING
+        `, [sKey, sVal]);
+      }
 
       // Execute seed.sql
       const seedSqlPath = path.join(__dirname, 'db', 'seed.sql');
@@ -456,10 +505,75 @@ function handleMemoryDelete(table, sql, params) {
   return { rows: [], rowCount: deletedCount };
 }
 
+async function getSystemSettings() {
+  const defaults = {
+    app_name: 'TaskTrack Pro',
+    app_subtitle: 'Teacher Task, Workflow & Performance Portal',
+    timezone: 'Asia/Kolkata',
+    session_expiry_hours: '24',
+    default_deadline_offset_hours: '24',
+    email_from_name: 'TaskTrack Operations',
+    email_from_address: 'contact@srbps.com',
+    academic_session: '2026-2027',
+    allow_late_submissions_default: 'true',
+    allow_edit_submission_default: 'false',
+    google_client_id: process.env.GOOGLE_CLIENT_ID || '',
+    google_client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
+    google_refresh_token: process.env.GOOGLE_REFRESH_TOKEN || ''
+  };
+
+  if (useMemoryFallback) {
+    const res = { ...defaults };
+    (memoryStore.system_settings || []).forEach(s => {
+      res[s.key] = s.value;
+    });
+    return res;
+  } else {
+    try {
+      const res = await query('SELECT key, value FROM system_settings');
+      const settings = { ...defaults };
+      res.rows.forEach(r => {
+        settings[r.key] = r.value;
+      });
+      return settings;
+    } catch (err) {
+      return defaults;
+    }
+  }
+}
+
+async function updateSystemSettings(updates = {}, userId = null) {
+  const now = new Date();
+  if (useMemoryFallback) {
+    if (!memoryStore.system_settings) memoryStore.system_settings = [];
+    for (const [key, value] of Object.entries(updates)) {
+      const idx = memoryStore.system_settings.findIndex(s => s.key === key);
+      if (idx !== -1) {
+        memoryStore.system_settings[idx].value = String(value);
+        memoryStore.system_settings[idx].updated_at = now;
+        memoryStore.system_settings[idx].updated_by = userId;
+      } else {
+        memoryStore.system_settings.push({ key, value: String(value), updated_at: now, updated_by: userId });
+      }
+    }
+  } else {
+    for (const [key, value] of Object.entries(updates)) {
+      await query(`
+        INSERT INTO system_settings (key, value, updated_at, updated_by)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+      `, [key, String(value), now, userId]);
+    }
+  }
+  return await getSystemSettings();
+}
+
 module.exports = {
   initDb,
   query,
   transaction,
+  getSystemSettings,
+  updateSystemSettings,
   getPool: () => pool,
   getMemoryStore: () => memoryStore,
   isMemoryFallback: () => useMemoryFallback

@@ -126,11 +126,48 @@ function closeModal() {
 window.openModal = openModal;
 window.closeModal = closeModal;
 
+function getLocalDateTimeLocalString(d = new Date(), offsetHours = 0) {
+  const baseTime = (d instanceof Date) ? d.getTime() : new Date(d).getTime();
+  const targetDate = new Date(baseTime + offsetHours * 60 * 60 * 1000);
+  
+  // Format in Asia/Kolkata timezone (or configured timezone)
+  const tz = (state.settings && state.settings.timezone) || 'Asia/Kolkata';
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+  
+  const parts = formatter.formatToParts(targetDate);
+  const getPart = (type) => parts.find(p => p.type === type)?.value || '00';
+  return `${getPart('year')}-${getPart('month')}-${getPart('day')}T${getPart('hour')}:${getPart('minute')}`;
+}
+window.getLocalDateTimeLocalString = getLocalDateTimeLocalString;
+
+async function loadSystemSettings() {
+  try {
+    const s = await api('/settings');
+    state.settings = s;
+  } catch {
+    state.settings = {
+      app_name: 'TaskTrack Pro',
+      timezone: 'Asia/Kolkata',
+      default_deadline_offset_hours: 24,
+      session_expiry_hours: 24
+    };
+  }
+}
+
 // ============================================================================
 // 3. AUTHENTICATION & SESSION MANAGEMENT
 // ============================================================================
 
 async function checkAuthSession() {
+  await loadSystemSettings();
   try {
     const user = await api('/auth/me');
     state.user = user;
@@ -346,6 +383,7 @@ function buildSidebarNav() {
     }
     if (state.user.user_type === 'SUPER_ADMIN' || state.user.isSuperAdmin) {
       addNavItem(nav, 'roles', 'fa-key', 'Roles & Access');
+      addNavItem(nav, 'settings', 'fa-gear', 'System Settings');
     }
 
     // HYBRID / DUAL-ROLE: Teacher Workspace for Admins, Principals & Academic Coordinators
@@ -497,6 +535,10 @@ async function renderCurrentView() {
     case 'roles':
       setPageTitle('Roles & Permissions');
       await renderRolesManagement(container);
+      break;
+    case 'settings':
+      setPageTitle('System Settings');
+      await renderSystemSettings(container);
       break;
 
     default:
@@ -1666,14 +1708,15 @@ async function openTaskEditor(taskId) {
     const audienceRules = typeof task.audience_rules === 'string' ? JSON.parse(task.audience_rules) : (task.audience_rules || {});
     const exclusions = typeof task.recipient_exclusions === 'string' ? JSON.parse(task.recipient_exclusions) : (task.recipient_exclusions || []);
 
+    const defaultOffset = (state.settings && parseInt(state.settings.default_deadline_offset_hours, 10)) || 24;
     state.taskBuilder = {
       editingTaskId: task.id,
       step: 1,
       title: task.title,
       description: task.description || '',
       task_type: task.task_type || 'ONE_TIME',
-      open_at: task.open_at ? new Date(task.open_at).toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16),
-      deadline_at: task.deadline_at ? new Date(task.deadline_at).toISOString().slice(0, 16) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+      open_at: task.open_at ? getLocalDateTimeLocalString(task.open_at, 0) : getLocalDateTimeLocalString(new Date(), 0),
+      deadline_at: task.deadline_at ? getLocalDateTimeLocalString(task.deadline_at, 0) : getLocalDateTimeLocalString(new Date(), defaultOffset),
       allow_late_submissions: task.allow_late_submissions !== false,
       allow_edit_submission: task.allow_edit_submission === true,
       status: task.status || 'ACTIVE',
@@ -1717,14 +1760,19 @@ async function publishTaskDirectly(taskId) {
 
 async function renderTaskBuilder(container) {
   if (!state.taskBuilder) {
+    const defaultOffset = (state.settings && parseInt(state.settings.default_deadline_offset_hours, 10)) || 24;
+    const nowLocal = getLocalDateTimeLocalString(new Date(), 0);
+    const deadlineLocal = getLocalDateTimeLocalString(new Date(), defaultOffset);
+
     state.taskBuilder = {
       step: 1,
       title: '',
       description: '',
       task_type: 'ONE_TIME',
-      open_at: new Date().toISOString().slice(0, 16),
-      deadline_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+      open_at: nowLocal,
+      deadline_at: deadlineLocal,
       allow_late_submissions: true,
+      allow_edit_submission: false,
       questions: [
         { key: 'Q1', label: 'Sample question text', type: 'short_text', required: true }
       ],
@@ -1904,12 +1952,13 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
           <div class="form-group">
             <label>Start / Open Date & Time</label>
-            <input type="datetime-local" id="tb-open-at" class="form-input" value="${tb.open_at || new Date().toISOString().slice(0, 16)}" />
+            <input type="datetime-local" id="tb-open-at" class="form-input" value="${tb.open_at}" onchange="handleTaskOpenDateChange(this.value)" />
             <span style="font-size:0.75rem; color:var(--text-muted);">Future date sets status as <strong>Scheduled</strong>.</span>
           </div>
           <div class="form-group">
             <label>Submission Deadline <span class="text-danger">*</span></label>
             <input type="datetime-local" id="tb-deadline" class="form-input" value="${tb.deadline_at}" />
+            <span style="font-size:0.75rem; color:var(--text-muted);">Defaults to 24 hours after start time.</span>
           </div>
         </div>
 
@@ -2469,6 +2518,23 @@ function updateRecipientPreviewState() {
     }
   }
 }
+
+function handleTaskOpenDateChange(val) {
+  if (!val || !state.taskBuilder) return;
+  state.taskBuilder.open_at = val;
+  const deadlineInput = document.getElementById('tb-deadline');
+  if (deadlineInput) {
+    const openDate = new Date(val);
+    if (!isNaN(openDate.getTime())) {
+      const defaultOffset = (state.settings && parseInt(state.settings.default_deadline_offset_hours, 10)) || 24;
+      const newDeadline = getLocalDateTimeLocalString(openDate, defaultOffset);
+      deadlineInput.value = newDeadline;
+      state.taskBuilder.deadline_at = newDeadline;
+    }
+  }
+}
+
+window.handleTaskOpenDateChange = handleTaskOpenDateChange;
 
 window.toggleAllRecipients = toggleAllRecipients;
 window.toggleRecipientExclusion = toggleRecipientExclusion;
@@ -5305,6 +5371,210 @@ async function handleSaveRole(event, roleId) {
     // Handled in api
   }
 }
+
+// ============================================================================
+// 9.5 SYSTEM SETTINGS
+// ============================================================================
+
+async function renderSystemSettings(container) {
+  const isSuperAdmin = state.user && (state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN');
+  if (!isSuperAdmin) {
+    container.innerHTML = `
+      <div class="card"><div class="card-body"><div class="empty-state"><i class="fa-solid fa-lock"></i><h3>Access Restricted</h3><p>Only Super Administrators can configure System Settings.</p></div></div></div>
+    `;
+    return;
+  }
+
+  const s = await api('/settings');
+  state.settings = s;
+
+  container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom: 20px;">
+      <div>
+        <h2 style="margin:0 0 4px 0;"><i class="fa-solid fa-gear text-primary"></i> System Settings & Configuration</h2>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin:0;">
+          Configure global application parameters, timing policies, session security, and Google Cloud OAuth2 email integration.
+        </p>
+      </div>
+      <button type="button" class="btn btn-outline btn-sm" onclick="openTestEmailModal()">
+        <i class="fa-solid fa-envelope-circle-check"></i> Test Email Dispatch
+      </button>
+    </div>
+
+    <form onsubmit="saveSystemSettings(event)">
+      <!-- 1. Application & Institutional Branding -->
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+          <h3><i class="fa-solid fa-building-flag text-primary"></i> Institutional & App Branding</h3>
+        </div>
+        <div class="card-body">
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+            <div class="form-group">
+              <label>Application Name <span class="text-danger">*</span></label>
+              <input type="text" name="app_name" class="form-input" value="${escapeHtml(s.app_name || 'TaskTrack Pro')}" required />
+            </div>
+            <div class="form-group">
+              <label>Academic Session / Term</label>
+              <input type="text" name="academic_session" class="form-input" value="${escapeHtml(s.academic_session || '2026-2027')}" placeholder="e.g. 2026-2027" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>App Subtitle / Portal Tagline</label>
+            <input type="text" name="app_subtitle" class="form-input" value="${escapeHtml(s.app_subtitle || 'Teacher Task, Workflow & Performance Portal')}" />
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Timezone & Timing Policies -->
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+          <h3><i class="fa-solid fa-clock text-primary"></i> Timezone, Timing & Submission Deadlines</h3>
+        </div>
+        <div class="card-body">
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+            <div class="form-group">
+              <label>Default System Timezone <span class="text-danger">*</span></label>
+              <select name="timezone" class="form-select">
+                <option value="Asia/Kolkata" ${s.timezone === 'Asia/Kolkata' ? 'selected' : ''}>Asia/Kolkata (IST, UTC+5:30) - Default</option>
+                <option value="UTC" ${s.timezone === 'UTC' ? 'selected' : ''}>UTC (Coordinated Universal Time)</option>
+                <option value="Asia/Dubai" ${s.timezone === 'Asia/Dubai' ? 'selected' : ''}>Asia/Dubai (GST, UTC+4:00)</option>
+                <option value="Europe/London" ${s.timezone === 'Europe/London' ? 'selected' : ''}>Europe/London (GMT/BST)</option>
+                <option value="America/New_York" ${s.timezone === 'America/New_York' ? 'selected' : ''}>America/New_York (EST/EDT)</option>
+              </select>
+              <small style="color:var(--text-muted); font-size:0.75rem;">Controls date/time formatting across portals, reports, and emails.</small>
+            </div>
+            <div class="form-group">
+              <label>Default Task Submission Window (Hours) <span class="text-danger">*</span></label>
+              <input type="number" name="default_deadline_offset_hours" class="form-input" min="1" max="720" value="${escapeHtml(s.default_deadline_offset_hours || '24')}" required />
+              <small style="color:var(--text-muted); font-size:0.75rem;">Difference between task start time and submission deadline (e.g. 24 hours).</small>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Session & Security Policies -->
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+          <h3><i class="fa-solid fa-shield-halved text-primary"></i> Session, Security & Submission Defaults</h3>
+        </div>
+        <div class="card-body">
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+            <div class="form-group">
+              <label>User Session Expiry (Hours) <span class="text-danger">*</span></label>
+              <input type="number" name="session_expiry_hours" class="form-input" min="1" max="168" value="${escapeHtml(s.session_expiry_hours || '24')}" required />
+              <small style="color:var(--text-muted); font-size:0.75rem;">Duration before inactive login sessions automatically require re-authentication.</small>
+            </div>
+            <div class="form-group">
+              <label>Institutional PIN (IPIN) Requirement</label>
+              <input type="text" class="form-input" value="4 to 6 Numeric Digits" disabled />
+              <small style="color:var(--text-muted); font-size:0.75rem;">Standard PIN security constraint enforced across all teacher accounts.</small>
+            </div>
+          </div>
+
+          <div style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
+            <label class="checkbox-label">
+              <input type="checkbox" name="allow_late_submissions_default" ${s.allow_late_submissions_default === 'true' || s.allow_late_submissions_default === true ? 'checked' : ''} />
+              <span><strong>Default: Allow Late Submissions</strong> (New tasks will default to accepting late submissions)</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="allow_edit_submission_default" ${s.allow_edit_submission_default === 'true' || s.allow_edit_submission_default === true ? 'checked' : ''} />
+              <span><strong>Default: Allow Response Editing</strong> (New tasks will default to allowing responses to be updated)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Email & Google Cloud OAuth2 Configuration -->
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+          <h3><i class="fa-solid fa-envelope text-primary"></i> Email & Google Cloud OAuth2 Dispatcher</h3>
+        </div>
+        <div class="card-body">
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+            <div class="form-group">
+              <label>Sender Display Name</label>
+              <input type="text" name="email_from_name" class="form-input" value="${escapeHtml(s.email_from_name || 'TaskTrack Operations')}" placeholder="e.g. SRBPS Task Portal" />
+            </div>
+            <div class="form-group">
+              <label>From Email Address <span class="text-danger">*</span></label>
+              <input type="email" name="email_from_address" class="form-input" value="${escapeHtml(s.email_from_address || 'contact@srbps.com')}" required placeholder="e.g. contact@srbps.com" />
+            </div>
+          </div>
+
+          <div style="background:var(--border-subtle); padding:16px; border-radius:var(--radius-md); margin-top:12px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+              <strong style="color:var(--primary);"><i class="fa-brands fa-google"></i> Google Cloud OAuth2 Credentials (Port 443 HTTPS)</strong>
+              <span class="badge ${s.google_refresh_token ? 'badge-active' : 'badge-not-started'}">
+                ${s.google_refresh_token ? 'Credentials Active' : 'Not Configured'}
+              </span>
+            </div>
+            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:14px;">
+              Google Cloud OAuth2 uses direct HTTPS (Port 443) REST API to send emails with 100% cloud firewall reliability.
+            </p>
+            <div class="form-group">
+              <label>Google OAuth Client ID</label>
+              <input type="text" name="google_client_id" class="form-input" value="${escapeHtml(s.google_client_id || '')}" placeholder="e.g. xxxxx.apps.googleusercontent.com" />
+            </div>
+            <div class="form-group">
+              <label>Google OAuth Client Secret</label>
+              <input type="password" name="google_client_secret" class="form-input" value="${escapeHtml(s.google_client_secret || '')}" placeholder="Client Secret" />
+            </div>
+            <div class="form-group">
+              <label>Google OAuth Refresh Token</label>
+              <input type="password" name="google_refresh_token" class="form-input" value="${escapeHtml(s.google_refresh_token || '')}" placeholder="1//04xxxxx Refresh Token" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+        <button type="submit" id="btn-save-settings" class="btn btn-primary btn-lg">
+          <i class="fa-solid fa-floppy-disk"></i> Save System Settings
+        </button>
+      </div>
+    </form>
+  `;
+}
+
+async function saveSystemSettings(event) {
+  event.preventDefault();
+  const form = event.target;
+  const btn = document.getElementById('btn-save-settings');
+
+  btn.disabled = true;
+  btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Saving...`;
+
+  const payload = {
+    app_name: form.app_name.value.trim(),
+    app_subtitle: form.app_subtitle.value.trim(),
+    academic_session: form.academic_session.value.trim(),
+    timezone: form.timezone.value,
+    default_deadline_offset_hours: form.default_deadline_offset_hours.value.trim(),
+    session_expiry_hours: form.session_expiry_hours.value.trim(),
+    allow_late_submissions_default: form.allow_late_submissions_default.checked ? 'true' : 'false',
+    allow_edit_submission_default: form.allow_edit_submission_default.checked ? 'true' : 'false',
+    email_from_name: form.email_from_name.value.trim(),
+    email_from_address: form.email_from_address.value.trim(),
+    google_client_id: form.google_client_id.value.trim(),
+    google_client_secret: form.google_client_secret.value.trim(),
+    google_refresh_token: form.google_refresh_token.value.trim()
+  };
+
+  try {
+    const res = await api('/settings', { method: 'PUT', body: payload });
+    state.settings = res.settings;
+    showToast('System settings saved successfully!', 'success');
+    loadCurrentView();
+  } catch {
+    // Handled in api
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<i class="fa-solid fa-floppy-disk"></i> Save System Settings`;
+  }
+}
+
+window.renderSystemSettings = renderSystemSettings;
+window.saveSystemSettings = saveSystemSettings;
 
 // ============================================================================
 // 10. GLOBAL EVENT LISTENERS & UTILITIES
