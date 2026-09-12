@@ -475,6 +475,7 @@ async function processRecurringTasks() {
 
       const periodLabel = now.toLocaleString('default', { month: 'short', year: 'numeric' });
       const instanceTitle = `${tmpl.title} - ${periodLabel}`;
+      const instanceId = uuidv4();
 
       const campusIds = typeof tmpl.campus_ids === 'string' ? JSON.parse(tmpl.campus_ids) : tmpl.campus_ids;
       const questions = typeof tmpl.questions === 'string' ? JSON.parse(tmpl.questions) : tmpl.questions;

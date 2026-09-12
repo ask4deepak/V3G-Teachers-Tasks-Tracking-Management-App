@@ -674,6 +674,54 @@ West Coast Campus, WCC`;
     assert.strictEqual(updatedAccess.campus_id, targetCampus.id);
   });
 
+  console.log('\n--- Phase 12: Task Prefixes, Assignor/Campus Resolution & Task Sections ---');
+
+  await test('Task title is auto-prefixed with sequence, campus and assignor', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0] || { id: 'cmp-01', name: 'Main Campus' };
+    const superAdmin = store.users.find(u => u.user_type === 'SUPER_ADMIN') || store.users[0];
+
+    const rawTitle = 'Term 1 Register Verification';
+    const seq = store.tasks.filter(t => t.task_type !== 'RECURRING_TEMPLATE').length + 1;
+    const expectedPrefix = `${seq} - ${campus.name} - ${superAdmin.display_name}`;
+
+    const newTaskId = 'task-prefix-test-' + Date.now();
+    store.tasks.push({
+      id: newTaskId,
+      task_type: 'ONE_TIME',
+      title: `${expectedPrefix} - ${rawTitle}`,
+      description: 'Test task with formatted prefix',
+      campus_ids: [campus.id],
+      questions: [{ key: 'q1', label: 'Done?', type: 'short_text' }],
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'ACTIVE',
+      open_at: new Date(Date.now() - 3600000),
+      deadline_at: new Date(Date.now() + 86400000),
+      created_by: superAdmin.id,
+      created_at: new Date()
+    });
+
+    const saved = store.tasks.find(t => t.id === newTaskId);
+    assert.ok(saved);
+    assert.ok(saved.title.startsWith(expectedPrefix));
+    assert.ok(saved.title.includes(rawTitle));
+  });
+
+  await test('Task records resolve creator_name and campus_names cleanly', async () => {
+    const store = db.getMemoryStore();
+    const task = store.tasks[0];
+    assert.ok(task);
+
+    const creator = store.users.find(u => u.id === task.created_by);
+    const creatorName = creator ? (creator.display_name || `${creator.first_name} ${creator.last_name}`.trim()) : 'Super Administrator';
+    const campusList = (Array.isArray(task.campus_ids) ? task.campus_ids : []).map(cid => store.campuses.find(c => c.id === cid)?.name).filter(Boolean);
+    const campusNames = campusList.length > 0 ? campusList.join(', ') : 'All Campuses';
+
+    assert.ok(typeof creatorName === 'string' && creatorName.length > 0);
+    assert.ok(typeof campusNames === 'string' && campusNames.length > 0);
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

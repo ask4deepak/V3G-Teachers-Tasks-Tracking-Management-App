@@ -1975,6 +1975,50 @@ router.post('/tasks/preview-recipients', auth.requireAuth, async (req, res) => {
   }
 });
 
+async function generateTaskTitleWithPrefix({ title, campusIds = [], userId = null }) {
+  let seq = 1;
+  let campusNameStr = 'All Campuses';
+  let assignorName = 'Super Administrator';
+
+  if (db.isMemoryFallback()) {
+    const store = db.getMemoryStore();
+    seq = store.tasks.filter(t => t.task_type !== 'RECURRING_TEMPLATE').length + 1;
+    if (campusIds && campusIds.length > 0) {
+      const names = campusIds.map(cid => store.campuses.find(c => c.id === cid)?.name).filter(Boolean);
+      if (names.length > 0) campusNameStr = names.join(', ');
+    }
+    if (userId) {
+      const u = store.users.find(usr => usr.id === userId);
+      if (u) assignorName = u.display_name || `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email;
+    }
+  } else {
+    try {
+      const countRes = await db.query(`SELECT COUNT(*) as cnt FROM tasks WHERE task_type != 'RECURRING_TEMPLATE'`);
+      seq = (parseInt(countRes.rows[0]?.cnt, 10) || 0) + 1;
+      if (campusIds && campusIds.length > 0) {
+        const cRes = await db.query(`SELECT name FROM campuses WHERE id = ANY($1)`, [campusIds]);
+        if (cRes.rows.length > 0) campusNameStr = cRes.rows.map(r => r.name).join(', ');
+      }
+      if (userId) {
+        const uRes = await db.query(`SELECT display_name, first_name, last_name, email FROM users WHERE id = $1`, [userId]);
+        if (uRes.rows.length > 0) {
+          const u = uRes.rows[0];
+          assignorName = u.display_name || `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email;
+        }
+      }
+    } catch {}
+  }
+
+  const cleanTitle = (title || '').trim();
+  const prefix = `${seq} - ${campusNameStr} - ${assignorName}`;
+  
+  // If the title already starts with a prefix like "1 - " or similar, keep cleanTitle
+  if (/^\d+\s*-\s*/.test(cleanTitle)) {
+    return cleanTitle;
+  }
+  return `${prefix} - ${cleanTitle}`;
+}
+
 router.get('/tasks', auth.requireAuth, async (req, res) => {
   try {
     const { status, campus_id, search } = req.query;
@@ -1993,6 +2037,11 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         const isOpenFuture = t.open_at && new Date(t.open_at) > now;
         const displayStatus = (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && isOpenFuture ? 'SCHEDULED' : t.status;
 
+        const creator = store.users.find(u => u.id === t.created_by);
+        const creatorName = creator ? (creator.display_name || `${creator.first_name} ${creator.last_name}`.trim()) : 'Super Administrator';
+        const campusList = (Array.isArray(t.campus_ids) ? t.campus_ids : []).map(cid => store.campuses.find(c => c.id === cid)?.name).filter(Boolean);
+        const campusNames = campusList.length > 0 ? campusList.join(', ') : 'All Campuses';
+
         return {
           ...t,
           status: displayStatus,
@@ -2006,6 +2055,8 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
           submitted_late: subLate,
           in_progress: inProgress,
           overdue: overdue,
+          creator_name: creatorName,
+          campus_names: campusNames,
           completion_rate: total > 0 ? Math.round(((subOnTime + subLate) / total) * 100) : 0
         };
       });
@@ -2023,17 +2074,20 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
         });
       }
       if (status) tasks = tasks.filter(t => t.status === status || t.raw_status === status);
-      if (search) tasks = tasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase()));
+      if (search) tasks = tasks.filter(t => (t.title && t.title.toLowerCase().includes(search.toLowerCase())) || (t.creator_name && t.creator_name.toLowerCase().includes(search.toLowerCase())));
       tasks.sort((a, b) => (a.sort_order - b.sort_order) || (new Date(b.created_at) - new Date(a.created_at)));
     } else {
       let q = `
         SELECT t.*,
+        COALESCE(u.display_name, TRIM(CONCAT(u.first_name, ' ', u.last_name)), 'Super Administrator') as creator_name,
+        (SELECT STRING_AGG(c.name, ', ') FROM campuses c WHERE c.id::text IN (SELECT jsonb_array_elements_text(t.campus_ids::jsonb))) as campus_names,
         (SELECT COUNT(*) FROM assignments a WHERE a.task_id = t.id) as total_assigned,
         (SELECT COUNT(*) FROM assignments a WHERE a.task_id = t.id AND a.status = 'SUBMITTED_ON_TIME') as submitted_on_time,
         (SELECT COUNT(*) FROM assignments a WHERE a.task_id = t.id AND a.status = 'SUBMITTED_LATE') as submitted_late,
         (SELECT COUNT(*) FROM assignments a WHERE a.task_id = t.id AND a.status = 'OVERDUE') as overdue,
         (SELECT COUNT(*) FROM assignments a WHERE a.task_id = t.id AND a.status = 'IN_PROGRESS') as in_progress
         FROM tasks t
+        LEFT JOIN users u ON t.created_by = u.id
         WHERE t.task_type != 'RECURRING_TEMPLATE'
       `;
       const p = [];
@@ -2051,7 +2105,7 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
       }
       if (search) {
         p.push(`%${search}%`);
-        q += ` AND t.title ILIKE $${p.length}`;
+        q += ` AND (t.title ILIKE $${p.length} OR u.display_name ILIKE $${p.length} OR u.first_name ILIKE $${p.length})`;
       }
       q += ' ORDER BY t.sort_order ASC, t.created_at DESC';
       const result = await db.query(q, p);
@@ -2068,6 +2122,8 @@ router.get('/tasks', auth.requireAuth, async (req, res) => {
           sort_order: t.sort_order || 0,
           allow_late_submissions: t.allow_late_submissions !== false,
           allow_edit_submission: t.allow_edit_submission === true,
+          creator_name: t.creator_name || 'Super Administrator',
+          campus_names: t.campus_names || 'All Campuses',
           completion_rate: total > 0 ? Math.round((comp / total) * 100) : 0
         };
       });
@@ -2104,6 +2160,12 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
 
     auth.assertCampusAccess(req.user, campus_ids);
 
+    const formattedTitle = await generateTaskTitleWithPrefix({
+      title,
+      campusIds: campus_ids,
+      userId: req.user.id
+    });
+
     const taskId = uuidv4();
     const now = new Date();
     const openDate = open_at ? new Date(open_at) : now;
@@ -2120,7 +2182,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
         id: taskId,
         task_type,
         parent_template_id: null,
-        title,
+        title: formattedTitle,
         description,
         campus_ids,
         questions,
@@ -2145,7 +2207,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       await db.query(`
         INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, status, open_at, deadline_at, allow_late_submissions, allow_edit_submission, sort_order, created_by, recurrence_config, next_generation_at, recurrence_status)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9, $10, $11, $12, $13, $14, $15, $16, $17)
-      `, [taskId, task_type, title, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), openDate, deadline, Boolean(allow_late_submissions), Boolean(allow_edit_submission), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
+      `, [taskId, task_type, formattedTitle, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), openDate, deadline, Boolean(allow_late_submissions), Boolean(allow_edit_submission), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
     }
 
     await services.logAudit({
@@ -2154,7 +2216,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       action: 'TASK_CREATED',
       entityType: 'TASK',
       entityId: taskId,
-      description: `Created task "${title}" (${task_type})`,
+      description: `Created task "${formattedTitle}" (${task_type})`,
       ipAddress: req.ip
     });
 

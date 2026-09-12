@@ -1561,11 +1561,84 @@ async function renderAdminDashboard(container) {
 
 // Admin Tasks Management
 async function renderAdminTasks(container) {
-  const tasks = await api('/tasks');
+  state.taskTab = state.taskTab || 'ACTIVE';
+  state.taskFilters = state.taskFilters || { campusId: '', search: '', taskType: '', sortBy: 'priority' };
+
+  const [allTasks, campuses] = await Promise.all([
+    api('/tasks'),
+    api('/campuses')
+  ]);
+
+  // Compute section counts
+  const activeCount = allTasks.filter(t => (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && !t.is_scheduled).length;
+  const scheduledCount = allTasks.filter(t => t.status === 'SCHEDULED' || t.is_scheduled).length;
+  const pausedCount = allTasks.filter(t => t.status === 'PAUSED').length;
+  const archivedCount = allTasks.filter(t => t.status === 'ARCHIVED').length;
+
+  // 1. Filter by active section tab
+  let tasks = allTasks.filter(t => {
+    if (state.taskTab === 'ACTIVE') {
+      return (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && !t.is_scheduled;
+    }
+    if (state.taskTab === 'SCHEDULED') {
+      return t.status === 'SCHEDULED' || t.is_scheduled;
+    }
+    if (state.taskTab === 'PAUSED') {
+      return t.status === 'PAUSED';
+    }
+    if (state.taskTab === 'ARCHIVED') {
+      return t.status === 'ARCHIVED';
+    }
+    return true;
+  });
+
+  // 2. Filter by Campus
+  if (state.taskFilters.campusId) {
+    tasks = tasks.filter(t => {
+      const cids = Array.isArray(t.campus_ids) ? t.campus_ids : (typeof t.campus_ids === 'string' ? JSON.parse(t.campus_ids) : []);
+      return cids.includes(state.taskFilters.campusId);
+    });
+  }
+
+  // 3. Filter by Task Type
+  if (state.taskFilters.taskType) {
+    tasks = tasks.filter(t => t.task_type === state.taskFilters.taskType);
+  }
+
+  // 4. Filter by Search (Title, Assignor, Description)
+  if (state.taskFilters.search) {
+    const q = state.taskFilters.search.toLowerCase().trim();
+    tasks = tasks.filter(t => 
+      (t.title && t.title.toLowerCase().includes(q)) ||
+      (t.creator_name && t.creator_name.toLowerCase().includes(q)) ||
+      (t.campus_names && t.campus_names.toLowerCase().includes(q)) ||
+      (t.description && t.description.toLowerCase().includes(q))
+    );
+  }
+
+  // 5. Apply Sorting
+  const sortBy = state.taskFilters.sortBy || 'priority';
+  tasks.sort((a, b) => {
+    if (sortBy === 'deadline_asc') return new Date(a.deadline_at || 0) - new Date(b.deadline_at || 0);
+    if (sortBy === 'deadline_desc') return new Date(b.deadline_at || 0) - new Date(a.deadline_at || 0);
+    if (sortBy === 'title_asc') return (a.title || '').localeCompare(b.title || '');
+    if (sortBy === 'title_desc') return (b.title || '').localeCompare(a.title || '');
+    if (sortBy === 'completion_desc') return (b.completion_rate || 0) - (a.completion_rate || 0);
+    if (sortBy === 'completion_asc') return (a.completion_rate || 0) - (b.completion_rate || 0);
+    if (sortBy === 'assigned_desc') return (b.total_assigned || 0) - (a.total_assigned || 0);
+    if (sortBy === 'created_desc') return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    // Default: Priority / sort_order ASC
+    return (a.sort_order - b.sort_order) || (new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  });
 
   container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
-      <h2><i class="fa-solid fa-list-check"></i> Tasks Directory</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom: 16px;">
+      <div>
+        <h2 style="margin:0 0 4px 0;"><i class="fa-solid fa-list-check"></i> Tasks Directory</h2>
+        <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">
+          Create, schedule, organize and track institutional tasks across campuses.
+        </p>
+      </div>
       ${hasPermission('tasks.create') ? `
         <button class="btn btn-primary" onclick="state.taskBuilder = null; navigateTo('task-builder')">
           <i class="fa-solid fa-plus"></i> Create Task
@@ -1573,31 +1646,113 @@ async function renderAdminTasks(container) {
       ` : ''}
     </div>
 
+    <!-- 1. Task Section Tabs -->
+    <div class="nav-tab-pills">
+      <button class="tab-pill ${state.taskTab === 'ACTIVE' ? 'active' : ''}" onclick="state.taskTab = 'ACTIVE'; loadCurrentView();">
+        <i class="fa-solid fa-circle-check"></i> Active <span class="tab-count-badge">${activeCount}</span>
+      </button>
+      <button class="tab-pill ${state.taskTab === 'SCHEDULED' ? 'active' : ''}" onclick="state.taskTab = 'SCHEDULED'; loadCurrentView();">
+        <i class="fa-solid fa-calendar-clock"></i> Scheduled <span class="tab-count-badge">${scheduledCount}</span>
+      </button>
+      <button class="tab-pill ${state.taskTab === 'PAUSED' ? 'active' : ''}" onclick="state.taskTab = 'PAUSED'; loadCurrentView();">
+        <i class="fa-solid fa-pause"></i> Paused <span class="tab-count-badge">${pausedCount}</span>
+      </button>
+      <button class="tab-pill ${state.taskTab === 'ARCHIVED' ? 'active' : ''}" onclick="state.taskTab = 'ARCHIVED'; loadCurrentView();">
+        <i class="fa-solid fa-box-archive"></i> Archived <span class="tab-count-badge">${archivedCount}</span>
+      </button>
+    </div>
+
+    <!-- 2. Responsive Filter & Sort Toolbar -->
+    <div class="filter-sort-bar">
+      <div class="filter-sort-group">
+        <!-- Campus Filter -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted); white-space:nowrap;"><i class="fa-solid fa-building-columns"></i> Campus:</label>
+          <select class="form-select form-select-sm" style="min-width:150px;" onchange="state.taskFilters.campusId = this.value; loadCurrentView();">
+            <option value="">All Campuses</option>
+            ${campuses.map(c => `<option value="${c.id}" ${state.taskFilters.campusId === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+
+        <!-- Task Type Filter -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted); white-space:nowrap;"><i class="fa-solid fa-tag"></i> Type:</label>
+          <select class="form-select form-select-sm" style="min-width:130px;" onchange="state.taskFilters.taskType = this.value; loadCurrentView();">
+            <option value="">All Types</option>
+            <option value="ONE_TIME" ${state.taskFilters.taskType === 'ONE_TIME' ? 'selected' : ''}>One-Time</option>
+            <option value="RECURRING_INSTANCE" ${state.taskFilters.taskType === 'RECURRING_INSTANCE' ? 'selected' : ''}>Recurring Instance</option>
+          </select>
+        </div>
+
+        <!-- Search Box -->
+        <div style="position:relative; display:flex; align-items:center;">
+          <input type="text" class="form-input form-input-sm" style="padding-left:28px; width:220px;" placeholder="Search title, assignor, campus..." value="${escapeHtml(state.taskFilters.search || '')}" oninput="state.taskFilters.search = this.value; debounceTaskSearch();" />
+          <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
+          ${state.taskFilters.search ? `
+            <button type="button" onclick="state.taskFilters.search = ''; loadCurrentView();" style="position:absolute; right:8px; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:0.8rem;">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          ` : ''}
+        </div>
+      </div>
+
+      <div class="filter-sort-group">
+        <!-- Sort Selector -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted); white-space:nowrap;"><i class="fa-solid fa-arrow-down-short-wide"></i> Sort By:</label>
+          <select class="form-select form-select-sm" style="min-width:160px;" onchange="state.taskFilters.sortBy = this.value; loadCurrentView();">
+            <option value="priority" ${sortBy === 'priority' ? 'selected' : ''}>Manual Priority (Default)</option>
+            <option value="deadline_asc" ${sortBy === 'deadline_asc' ? 'selected' : ''}>Deadline: Earliest First</option>
+            <option value="deadline_desc" ${sortBy === 'deadline_desc' ? 'selected' : ''}>Deadline: Latest First</option>
+            <option value="title_asc" ${sortBy === 'title_asc' ? 'selected' : ''}>Title: A to Z</option>
+            <option value="title_desc" ${sortBy === 'title_desc' ? 'selected' : ''}>Title: Z to A</option>
+            <option value="completion_desc" ${sortBy === 'completion_desc' ? 'selected' : ''}>Completion: High to Low</option>
+            <option value="completion_asc" ${sortBy === 'completion_asc' ? 'selected' : ''}>Completion: Low to High</option>
+            <option value="assigned_desc" ${sortBy === 'assigned_desc' ? 'selected' : ''}>Assigned Count: Most</option>
+            <option value="created_desc" ${sortBy === 'created_desc' ? 'selected' : ''}>Created: Newest First</option>
+          </select>
+        </div>
+
+        ${(state.taskFilters.campusId || state.taskFilters.taskType || state.taskFilters.search || sortBy !== 'priority') ? `
+          <button class="btn btn-outline btn-sm" onclick="state.taskFilters = { campusId: '', search: '', taskType: '', sortBy: 'priority' }; loadCurrentView();" title="Reset Filters">
+            <i class="fa-solid fa-arrow-rotate-left"></i> Reset
+          </button>
+        ` : ''}
+      </div>
+    </div>
+
+    <!-- 3. Tasks Table -->
     <div class="card">
-      <div class="card-body">
+      <div class="card-body" style="padding:0;">
         <div class="table-responsive">
-          <table class="table">
+          <table class="table" style="margin-bottom:0;">
             <thead>
               <tr>
                 <th style="width: 70px; text-align:center;">Priority</th>
-                <th>Title & Info</th>
+                <th>Task Details & Info</th>
                 <th>Type</th>
                 <th>Status</th>
-                <th>Assigned</th>
+                <th style="text-align:center;">Assigned</th>
                 <th>Schedule & Deadline</th>
-                <th>Completion Rate</th>
-                <th>Actions</th>
+                <th>Completion</th>
+                <th style="text-align:right;">Actions</th>
               </tr>
             </thead>
             <tbody>
               ${tasks.length === 0 ? `
-                <tr><td colspan="8" class="empty-state">No tasks created yet. Click "Create Task" to begin.</td></tr>
+                <tr>
+                  <td colspan="8" class="empty-state" style="padding:40px 20px;">
+                    <i class="fa-solid fa-folder-open" style="font-size:2rem; color:var(--text-muted); margin-bottom:10px; display:block;"></i>
+                    <p style="font-size:1rem; font-weight:600; margin:0 0 6px 0;">No tasks found in "${state.taskTab}"</p>
+                    <small style="color:var(--text-muted);">Try adjusting your search or campus filters, or create a new task.</small>
+                  </td>
+                </tr>
               ` : tasks.map((t, idx) => {
                 const isFirst = idx === 0;
                 const isLast = idx === tasks.length - 1;
 
                 let statusBadge = `<span class="badge badge-${t.status.toLowerCase()}">${t.status}</span>`;
-                if (t.status === 'SCHEDULED') {
+                if (t.status === 'SCHEDULED' || t.is_scheduled) {
                   statusBadge = `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled</span>`;
                 } else if (t.status === 'PAUSED') {
                   statusBadge = `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused</span>`;
@@ -1611,19 +1766,31 @@ async function renderAdminTasks(container) {
                   <tr>
                     <td style="text-align:center;">
                       <div style="display:flex; flex-direction:column; gap:2px; align-items:center;">
-                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isFirst ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'UP')" title="Move Up (Higher in Teacher Portal)">
+                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isFirst || sortBy !== 'priority' ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'UP')" title="Move Up in Priority">
                           <i class="fa-solid fa-arrow-up"></i>
                         </button>
-                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isLast ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'DOWN')" title="Move Down">
+                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isLast || sortBy !== 'priority' ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'DOWN')" title="Move Down in Priority">
                           <i class="fa-solid fa-arrow-down"></i>
                         </button>
                       </div>
                     </td>
                     <td>
-                      <strong>${escapeHtml(t.title)}</strong>
-                      ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${escapeHtml(t.description)}</p>` : ''}
+                      <div style="font-size:0.95rem; font-weight:700; color:var(--text-main); margin-bottom:4px;">
+                        ${escapeHtml(t.title)}
+                      </div>
+                      <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+                        <div class="task-meta-tag">
+                          <i class="fa-solid fa-user-pen"></i> Assigned by: <strong style="color:var(--text-main);">${escapeHtml(t.creator_name || 'Super Administrator')}</strong>
+                        </div>
+                        <div class="task-meta-tag">
+                          <i class="fa-solid fa-building-columns"></i> Campus: <span class="badge badge-secondary" style="font-size:0.72rem;">${escapeHtml(t.campus_names || 'All Campuses')}</span>
+                        </div>
+                      </div>
+                      ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin:4px 0 0 0; max-width:420px;">${escapeHtml(t.description)}</p>` : ''}
                     </td>
-                    <td><span class="badge badge-not-started">${t.task_type}</span></td>
+                    <td>
+                      <span class="badge badge-not-started" style="font-size:0.75rem;">${t.task_type === 'RECURRING_INSTANCE' ? 'RECURRING' : t.task_type}</span>
+                    </td>
                     <td>
                       <div style="display:flex; flex-direction:column; gap:4px;">
                         ${statusBadge}
@@ -1635,9 +1802,14 @@ async function renderAdminTasks(container) {
                         </select>
                       </div>
                     </td>
-                    <td><span class="badge badge-in-progress">${t.total_assigned || 0}</span></td>
+                    <td style="text-align:center;">
+                      <button type="button" class="btn-badge-interactive" onclick="openTaskAssignedTeachersModal('${t.id}', '${escapeHtml(t.title).replace(/'/g, "\\'")}')" title="Click to view full list of assigned teachers">
+                        <span>${t.total_assigned || 0}</span>
+                        <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:0.65rem;"></i>
+                      </button>
+                    </td>
                     <td>
-                      <div><i class="fa-regular fa-clock text-danger"></i> Due: <strong>${formatDateTime(t.deadline_at)}</strong></div>
+                      <div style="font-size:0.85rem;"><i class="fa-regular fa-clock text-danger"></i> Due: <strong>${formatDateTime(t.deadline_at)}</strong></div>
                       ${t.open_at ? `<div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">Opens: ${formatDateTime(t.open_at)}</div>` : ''}
                       ${!t.allow_late_submissions ? `<div style="font-size:0.75rem; color:var(--danger); font-weight:600;"><i class="fa-solid fa-lock"></i> Late Closed</div>` : `<div style="font-size:0.75rem; color:var(--success);"><i class="fa-solid fa-lock-open"></i> Late Allowed</div>`}
                     </td>
@@ -1646,11 +1818,11 @@ async function renderAdminTasks(container) {
                         <div style="width:50px; height:6px; background:var(--border-color); border-radius:3px; overflow:hidden;">
                           <div style="height:100%; width:${t.completion_rate || 0}%; background:var(--primary);"></div>
                         </div>
-                        <strong>${t.completion_rate || 0}%</strong>
+                        <strong style="font-size:0.85rem;">${t.completion_rate || 0}%</strong>
                       </div>
                     </td>
-                    <td>
-                      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <td style="text-align:right;">
+                      <div style="display:inline-flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
                         <button class="btn btn-primary btn-sm" onclick="openTaskEditor('${t.id}')" title="Edit Task Questions, Audience & Rules">
                           <i class="fa-solid fa-pen-to-square"></i> Edit
                         </button>
@@ -1673,6 +1845,173 @@ async function renderAdminTasks(container) {
       </div>
     </div>
   `;
+}
+
+let taskSearchDebounceTimer = null;
+function debounceTaskSearch() {
+  clearTimeout(taskSearchDebounceTimer);
+  taskSearchDebounceTimer = setTimeout(() => {
+    loadCurrentView();
+  }, 250);
+}
+
+// Modal showing list of assigned teachers for a task
+async function openTaskAssignedTeachersModal(taskId, taskTitle) {
+  try {
+    const data = await api(`/reports/task-wise?task_id=${taskId}`);
+    const { stats, rows = [] } = data;
+
+    let filterStatus = '';
+    let searchQuery = '';
+
+    function renderModalBody() {
+      let filtered = rows;
+      if (filterStatus) {
+        filtered = filtered.filter(r => r.status === filterStatus);
+      }
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase().trim();
+        filtered = filtered.filter(r => 
+          (r.display_name && r.display_name.toLowerCase().includes(q)) ||
+          (r.email && r.email.toLowerCase().includes(q)) ||
+          (r.campus_name && r.campus_name.toLowerCase().includes(q))
+        );
+      }
+
+      return `
+        <div style="max-height: 80vh; display:flex; flex-direction:column;">
+          <!-- Modal Header -->
+          <div class="modal-header-with-stats">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+              <div>
+                <h2 style="margin:0 0 4px 0; font-size:1.25rem;"><i class="fa-solid fa-users text-primary"></i> Assigned Faculty Members</h2>
+                <div style="font-size:0.88rem; color:var(--text-muted);">
+                  Task: <strong style="color:var(--text-main);">${escapeHtml(taskTitle)}</strong>
+                </div>
+              </div>
+              <button class="btn-icon" onclick="closeModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <!-- Summary KPI Pills -->
+            <div class="modal-stats-pills">
+              <span class="stat-pill" style="background:rgba(37, 99, 235, 0.1); color:var(--primary);">
+                <i class="fa-solid fa-list-check"></i> Total Assigned: <strong>${stats.total}</strong>
+              </span>
+              <span class="stat-pill" style="background:rgba(16, 185, 129, 0.1); color:var(--success);">
+                <i class="fa-solid fa-check"></i> On-Time: <strong>${stats.on_time}</strong>
+              </span>
+              <span class="stat-pill" style="background:rgba(245, 158, 11, 0.1); color:var(--warning);">
+                <i class="fa-solid fa-clock"></i> Late: <strong>${stats.late}</strong>
+              </span>
+              <span class="stat-pill" style="background:rgba(239, 68, 68, 0.1); color:var(--danger);">
+                <i class="fa-solid fa-triangle-exclamation"></i> Overdue: <strong>${stats.overdue}</strong>
+              </span>
+              <span class="stat-pill" style="background:rgba(100, 116, 139, 0.1); color:var(--text-muted);">
+                <i class="fa-solid fa-hourglass-half"></i> In Progress: <strong>${stats.pending}</strong>
+              </span>
+            </div>
+          </div>
+
+          <!-- Interactive Search & Status Filter inside Modal -->
+          <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+            <div style="position:relative; flex:1; min-width:200px;">
+              <input type="text" id="modal-teacher-search" class="form-input form-input-sm" style="padding-left:28px;" placeholder="Search teacher by name, email, campus..." value="${escapeHtml(searchQuery)}" />
+              <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
+            </div>
+            <select id="modal-teacher-status" class="form-select form-select-sm" style="width:170px;">
+              <option value="">All Statuses</option>
+              <option value="SUBMITTED_ON_TIME" ${filterStatus === 'SUBMITTED_ON_TIME' ? 'selected' : ''}>Submitted On Time</option>
+              <option value="SUBMITTED_LATE" ${filterStatus === 'SUBMITTED_LATE' ? 'selected' : ''}>Submitted Late</option>
+              <option value="OVERDUE" ${filterStatus === 'OVERDUE' ? 'selected' : ''}>Overdue</option>
+              <option value="IN_PROGRESS" ${filterStatus === 'IN_PROGRESS' ? 'selected' : ''}>In Progress</option>
+              <option value="NOT_STARTED" ${filterStatus === 'NOT_STARTED' ? 'selected' : ''}>Not Started</option>
+            </select>
+          </div>
+
+          <!-- Teachers Table -->
+          <div class="table-responsive" style="max-height: 400px; overflow-y:auto; border:1px solid var(--border-color); border-radius:var(--radius-md);">
+            <table class="table" style="margin-bottom:0; font-size:0.88rem;">
+              <thead style="position:sticky; top:0; background:var(--bg-surface); z-index:2;">
+                <tr>
+                  <th style="width:40px;">#</th>
+                  <th>Faculty Member</th>
+                  <th>Campus</th>
+                  <th>Status</th>
+                  <th>Due Date</th>
+                  <th>Submission Time</th>
+                  <th style="text-align:right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="modal-teacher-rows">
+                ${filtered.length === 0 ? `
+                  <tr><td colspan="7" class="empty-state" style="padding:24px;">No faculty members matched the search.</td></tr>
+                ` : filtered.map((r, i) => `
+                  <tr>
+                    <td><span style="color:var(--text-muted); font-size:0.8rem;">${i + 1}</span></td>
+                    <td>
+                      <strong>${escapeHtml(r.display_name)}</strong>
+                      <div style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(r.email)}</div>
+                    </td>
+                    <td><span class="badge badge-secondary" style="font-size:0.72rem;">${escapeHtml(r.campus_name)}</span></td>
+                    <td><span class="badge badge-${r.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(r.status)}</span></td>
+                    <td>${formatDateTime(r.due_at)}</td>
+                    <td>${r.submitted_at ? formatDateTime(r.submitted_at) : '<span class="text-muted">Not Submitted</span>'}</td>
+                    <td style="text-align:right;">
+                      ${(r.status === 'SUBMITTED_ON_TIME' || r.status === 'SUBMITTED_LATE') ? `
+                        <button class="btn btn-outline btn-sm" style="padding:2px 8px; font-size:0.78rem;" onclick="closeModal(); openResponseViewerModal('${taskId}', '${r.user_id}', '${escapeHtml(r.display_name).replace(/'/g, "\\'")}')">
+                          <i class="fa-solid fa-file-lines"></i> View
+                        </button>
+                      ` : '<span class="text-muted" style="font-size:0.78rem;">-</span>'}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
+            <span style="font-size:0.82rem; color:var(--text-muted);">Showing <strong>${filtered.length}</strong> of <strong>${rows.length}</strong> assigned teachers</span>
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+          </div>
+        </div>
+      `;
+    }
+
+    openModal(renderModalBody());
+
+    // Attach search & filter events inside modal
+    const searchInput = document.getElementById('modal-teacher-search');
+    const statusSelect = document.getElementById('modal-teacher-status');
+
+    if (searchInput) {
+      searchInput.addEventListener('input', (e) => {
+        searchQuery = e.target.value;
+        const bodyEl = document.getElementById('modal-content');
+        if (bodyEl) {
+          bodyEl.innerHTML = renderModalBody();
+          // Re-focus and restore caret
+          const newSearchInput = document.getElementById('modal-teacher-search');
+          if (newSearchInput) {
+            newSearchInput.focus();
+            newSearchInput.setSelectionRange(searchQuery.length, searchQuery.length);
+          }
+        }
+      });
+    }
+
+    if (statusSelect) {
+      statusSelect.addEventListener('change', (e) => {
+        filterStatus = e.target.value;
+        const bodyEl = document.getElementById('modal-content');
+        if (bodyEl) {
+          bodyEl.innerHTML = renderModalBody();
+        }
+      });
+    }
+
+  } catch (err) {
+    showToast('Failed to load assigned teachers: ' + err.message, 'danger');
+  }
 }
 
 async function reorderTask(taskId, direction) {
@@ -2892,33 +3231,143 @@ async function commitSendReminders(taskId) {
 
 // Teacher-Wise Performance Report
 async function renderTeacherWiseReport(container) {
-  const teachers = await api('/users?user_type=');
-  const selectedTeacherId = state.filters.teacherId || (teachers[0] ? teachers[0].id : null);
+  state.filters.tpCampusId = state.filters.tpCampusId || '';
+  state.filters.tpSearch = state.filters.tpSearch || '';
+  state.filters.tpSortBy = state.filters.tpSortBy || 'name_asc';
+  state.filters.tpStatus = state.filters.tpStatus || '';
+
+  const [allTeachers, campuses] = await Promise.all([
+    api('/users?user_type='),
+    api('/campuses')
+  ]);
+
+  // 1. Filter Teachers by Campus
+  let teachers = allTeachers;
+  if (state.filters.tpCampusId) {
+    teachers = teachers.filter(t => t.campus_id === state.filters.tpCampusId);
+  }
+
+  // 2. Filter Teachers by Search
+  if (state.filters.tpSearch) {
+    const q = state.filters.tpSearch.toLowerCase().trim();
+    teachers = teachers.filter(t => 
+      (t.display_name && t.display_name.toLowerCase().includes(q)) ||
+      (t.email && t.email.toLowerCase().includes(q)) ||
+      (t.employee_code && t.employee_code.toLowerCase().includes(q)) ||
+      (t.campus_name && t.campus_name.toLowerCase().includes(q))
+    );
+  }
+
+  // 3. Sort Teachers
+  teachers.sort((a, b) => {
+    if (state.filters.tpSortBy === 'name_desc') {
+      return (b.display_name || '').localeCompare(a.display_name || '');
+    }
+    return (a.display_name || '').localeCompare(b.display_name || '');
+  });
+
+  const selectedTeacherId = (teachers.some(t => t.id === state.filters.teacherId) ? state.filters.teacherId : null) || (teachers[0] ? teachers[0].id : null);
 
   if (!selectedTeacherId) {
     container.innerHTML = `
       ${renderReportTabs('teacher-wise')}
-      <div class="empty-state"><h3>No faculty members found</h3></div>
+      <div class="filter-sort-bar" style="margin-top:16px;">
+        <div class="filter-sort-group">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted);"><i class="fa-solid fa-building-columns"></i> Campus:</label>
+            <select class="form-select form-select-sm" onchange="state.filters.tpCampusId = this.value; loadCurrentView();">
+              <option value="">All Campuses</option>
+              ${campuses.map(c => `<option value="${c.id}" ${state.filters.tpCampusId === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div style="position:relative; display:flex; align-items:center;">
+            <input type="text" class="form-input form-input-sm" style="padding-left:28px;" placeholder="Search faculty name, email..." value="${escapeHtml(state.filters.tpSearch)}" oninput="state.filters.tpSearch = this.value; debounceTeacherSearch();" />
+            <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
+          </div>
+        </div>
+        ${(state.filters.tpCampusId || state.filters.tpSearch) ? `
+          <button class="btn btn-outline btn-sm" onclick="state.filters.tpCampusId = ''; state.filters.tpSearch = ''; loadCurrentView();">
+            <i class="fa-solid fa-arrow-rotate-left"></i> Reset
+          </button>
+        ` : ''}
+      </div>
+      <div class="card" style="margin-top:16px;"><div class="card-body"><div class="empty-state"><h3>No faculty members match the selected filters</h3><p>Try resetting the campus or search query.</p></div></div></div>
     `;
     return;
   }
 
   const data = await api(`/reports/teacher-wise?teacher_id=${selectedTeacherId}`);
-  const { teacher, stats, assignments } = data;
+  const { teacher, stats, assignments: rawAssignments = [] } = data;
+
+  // Filter historical assignments
+  let assignments = rawAssignments;
+  if (state.filters.tpStatus) {
+    assignments = assignments.filter(a => a.status === state.filters.tpStatus);
+  }
 
   container.innerHTML = `
     ${renderReportTabs('teacher-wise')}
 
-    <div class="filter-bar">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <label><strong>Select Faculty Member:</strong></label>
-        <select class="form-select" onchange="state.filters.teacherId = this.value; loadCurrentView();">
-          ${teachers.map(t => `<option value="${t.id}" ${t.id === selectedTeacherId ? 'selected' : ''}>${escapeHtml(t.display_name)} (${escapeHtml(t.email)})</option>`).join('')}
-        </select>
+    <!-- Teacher Performance Filter & Sort Bar -->
+    <div class="filter-sort-bar" style="margin-top:16px;">
+      <div class="filter-sort-group">
+        <!-- Campus Filter -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted);"><i class="fa-solid fa-building-columns"></i> Campus:</label>
+          <select class="form-select form-select-sm" style="min-width:150px;" onchange="state.filters.tpCampusId = this.value; loadCurrentView();">
+            <option value="">All Campuses</option>
+            ${campuses.map(c => `<option value="${c.id}" ${state.filters.tpCampusId === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+
+        <!-- Faculty Search -->
+        <div style="position:relative; display:flex; align-items:center;">
+          <input type="text" class="form-input form-input-sm" style="padding-left:28px; width:200px;" placeholder="Search faculty..." value="${escapeHtml(state.filters.tpSearch)}" oninput="state.filters.tpSearch = this.value; debounceTeacherSearch();" />
+          <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
+        </div>
+
+        <!-- Faculty Member Select -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted);"><i class="fa-solid fa-chalkboard-user"></i> Faculty:</label>
+          <select class="form-select form-select-sm" style="min-width:240px; font-weight:600;" onchange="state.filters.teacherId = this.value; loadCurrentView();">
+            ${teachers.map(t => `<option value="${t.id}" ${t.id === selectedTeacherId ? 'selected' : ''}>${escapeHtml(t.display_name)} (${escapeHtml(t.campus_name || 'Campus')})</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="filter-sort-group">
+        <!-- Sort Faculty -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted);"><i class="fa-solid fa-arrow-down-a-z"></i> Sort:</label>
+          <select class="form-select form-select-sm" onchange="state.filters.tpSortBy = this.value; loadCurrentView();">
+            <option value="name_asc" ${state.filters.tpSortBy === 'name_asc' ? 'selected' : ''}>Faculty Name (A to Z)</option>
+            <option value="name_desc" ${state.filters.tpSortBy === 'name_desc' ? 'selected' : ''}>Faculty Name (Z to A)</option>
+          </select>
+        </div>
+
+        <!-- Assignment Status Filter -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted);"><i class="fa-solid fa-filter"></i> Task Status:</label>
+          <select class="form-select form-select-sm" onchange="state.filters.tpStatus = this.value; loadCurrentView();">
+            <option value="">All Statuses</option>
+            <option value="SUBMITTED_ON_TIME" ${state.filters.tpStatus === 'SUBMITTED_ON_TIME' ? 'selected' : ''}>Submitted On Time</option>
+            <option value="SUBMITTED_LATE" ${state.filters.tpStatus === 'SUBMITTED_LATE' ? 'selected' : ''}>Submitted Late</option>
+            <option value="OVERDUE" ${state.filters.tpStatus === 'OVERDUE' ? 'selected' : ''}>Overdue</option>
+            <option value="IN_PROGRESS" ${state.filters.tpStatus === 'IN_PROGRESS' ? 'selected' : ''}>In Progress</option>
+            <option value="NOT_STARTED" ${state.filters.tpStatus === 'NOT_STARTED' ? 'selected' : ''}>Not Started</option>
+          </select>
+        </div>
+
+        ${(state.filters.tpCampusId || state.filters.tpSearch || state.filters.tpStatus || state.filters.tpSortBy !== 'name_asc') ? `
+          <button class="btn btn-outline btn-sm" onclick="state.filters.tpCampusId = ''; state.filters.tpSearch = ''; state.filters.tpStatus = ''; state.filters.tpSortBy = 'name_asc'; loadCurrentView();" title="Reset Filters">
+            <i class="fa-solid fa-arrow-rotate-left"></i> Reset
+          </button>
+        ` : ''}
       </div>
     </div>
 
-    <div class="kpi-grid">
+    <!-- KPI Summary Grid -->
+    <div class="kpi-grid" style="margin-top:16px;">
       <div class="kpi-card">
         <div class="kpi-icon blue"><i class="fa-solid fa-list-check"></i></div>
         <div>
@@ -2951,18 +3400,22 @@ async function renderTeacherWiseReport(container) {
         <div class="kpi-icon purple"><i class="fa-solid fa-percent"></i></div>
         <div>
           <div class="kpi-value">${stats.on_time_rate}%</div>
-          <div class="kpi-label">On-Time %</div>
+          <div class="kpi-label">On-Time Reliability</div>
         </div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-clock-rotate-left"></i> Historical Assignments Log</h2>
+    <!-- Historical Assignments Table -->
+    <div class="card" style="margin-top:20px;">
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <h2 style="margin:0 0 2px 0;"><i class="fa-solid fa-clock-rotate-left"></i> Historical Assignments Log</h2>
+          <span style="font-size:0.82rem; color:var(--text-muted);">Faculty: <strong>${escapeHtml(teacher.display_name)}</strong> &bull; Showing ${assignments.length} assignments</span>
+        </div>
       </div>
-      <div class="card-body">
+      <div class="card-body" style="padding:0;">
         <div class="table-responsive">
-          <table class="table">
+          <table class="table" style="margin-bottom:0;">
             <thead>
               <tr>
                 <th>Task Title</th>
@@ -2974,10 +3427,12 @@ async function renderTeacherWiseReport(container) {
               </tr>
             </thead>
             <tbody>
-              ${assignments.map(a => `
+              ${assignments.length === 0 ? `
+                <tr><td colspan="6" class="empty-state" style="padding:30px;">No historical assignments match the status filter.</td></tr>
+              ` : assignments.map(a => `
                 <tr>
                   <td><strong>${escapeHtml(a.task_title)}</strong></td>
-                  <td>${escapeHtml(a.campus_name)}</td>
+                  <td><span class="badge badge-secondary" style="font-size:0.75rem;">${escapeHtml(a.campus_name)}</span></td>
                   <td>${formatDate(a.assigned_at)}</td>
                   <td>${formatDateTime(a.due_at)}</td>
                   <td>${a.submitted_at ? formatDateTime(a.submitted_at) : '<span class="text-muted">Not Submitted</span>'}</td>
@@ -2990,6 +3445,14 @@ async function renderTeacherWiseReport(container) {
       </div>
     </div>
   `;
+}
+
+let teacherSearchDebounceTimer = null;
+function debounceTeacherSearch() {
+  clearTimeout(teacherSearchDebounceTimer);
+  teacherSearchDebounceTimer = setTimeout(() => {
+    loadCurrentView();
+  }, 250);
 }
 
 // Detailed Response Report with Sorting, Filtering, and Dynamic Question Columns
@@ -6017,10 +6480,10 @@ async function renderSystemSettings(container) {
         </div>
       </div>
 
-      <!-- 4. Email & Google Cloud OAuth2 Configuration -->
+      <!-- 4. Email & Dispatch Configuration -->
       <div class="card" style="margin-bottom: 20px;">
         <div class="card-header">
-          <h3><i class="fa-solid fa-envelope text-primary"></i> Email & Google Cloud OAuth2 Dispatcher</h3>
+          <h3><i class="fa-solid fa-envelope text-primary"></i> Email & System Notifications</h3>
         </div>
         <div class="card-body">
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
@@ -6031,30 +6494,6 @@ async function renderSystemSettings(container) {
             <div class="form-group">
               <label>From Email Address <span class="text-danger">*</span></label>
               <input type="email" name="email_from_address" class="form-input" value="${escapeHtml(s.email_from_address || 'contact@srbps.com')}" required placeholder="e.g. contact@srbps.com" />
-            </div>
-          </div>
-
-          <div style="background:var(--border-subtle); padding:16px; border-radius:var(--radius-md); margin-top:12px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-              <strong style="color:var(--primary);"><i class="fa-brands fa-google"></i> Google Cloud OAuth2 Credentials (Port 443 HTTPS)</strong>
-              <span class="badge ${s.google_refresh_token ? 'badge-active' : 'badge-not-started'}">
-                ${s.google_refresh_token ? 'Credentials Active' : 'Not Configured'}
-              </span>
-            </div>
-            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:14px;">
-              Google Cloud OAuth2 uses direct HTTPS (Port 443) REST API to send emails with 100% cloud firewall reliability.
-            </p>
-            <div class="form-group">
-              <label>Google OAuth Client ID</label>
-              <input type="text" name="google_client_id" class="form-input" value="${escapeHtml(s.google_client_id || '')}" placeholder="e.g. xxxxx.apps.googleusercontent.com" />
-            </div>
-            <div class="form-group">
-              <label>Google OAuth Client Secret</label>
-              <input type="password" name="google_client_secret" class="form-input" value="${escapeHtml(s.google_client_secret || '')}" placeholder="Client Secret" />
-            </div>
-            <div class="form-group">
-              <label>Google OAuth Refresh Token</label>
-              <input type="password" name="google_refresh_token" class="form-input" value="${escapeHtml(s.google_refresh_token || '')}" placeholder="1//04xxxxx Refresh Token" />
             </div>
           </div>
         </div>
@@ -6087,10 +6526,7 @@ async function saveSystemSettings(event) {
     allow_late_submissions_default: form.allow_late_submissions_default.checked ? 'true' : 'false',
     allow_edit_submission_default: form.allow_edit_submission_default.checked ? 'true' : 'false',
     email_from_name: form.email_from_name.value.trim(),
-    email_from_address: form.email_from_address.value.trim(),
-    google_client_id: form.google_client_id.value.trim(),
-    google_client_secret: form.google_client_secret.value.trim(),
-    google_refresh_token: form.google_refresh_token.value.trim()
+    email_from_address: form.email_from_address.value.trim()
   };
 
   try {
