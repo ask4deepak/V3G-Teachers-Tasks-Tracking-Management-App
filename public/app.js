@@ -293,6 +293,16 @@ function updateCampusWidgetLabel() {
   }
 }
 
+function getCampusNameForId(campusId) {
+  const userCampuses = state.user ? (state.user.campuses || []) : [];
+  if (!campusId || campusId === 'ALL') {
+    return userCampuses.length > 1 ? `All Campuses (${userCampuses.length})` : (userCampuses[0]?.name || 'All Campuses');
+  }
+  const found = userCampuses.find(c => c.id === campusId);
+  return found ? found.name : 'Active Campus';
+}
+window.getCampusNameForId = getCampusNameForId;
+
 function demoLogin(email, password) {
   elements.loginEmail.value = email;
   elements.loginPassword.value = password;
@@ -1666,31 +1676,41 @@ async function handlePasswordReset(event) {
 // ============================================================================
 
 async function renderAdminDashboard(container) {
-  const [allTasks, allTeachers, requests] = await Promise.all([
-    api('/tasks'),
-    api('/users?user_type=TEACHER'),
-    hasPermission('groups.approve_requests') ? api('/group-requests/pending-count') : Promise.resolve({ count: 0 })
-  ]);
+  try {
+    const [allTasksRaw, allTeachersRaw, requestsRaw] = await Promise.all([
+      api('/tasks').catch(() => []),
+      api('/users?user_type=TEACHER').catch(() => []),
+      hasPermission('groups.approve_requests') ? api('/group-requests/pending-count').catch(() => ({ count: 0 })) : Promise.resolve({ count: 0 })
+    ]);
 
-  // Apply active campus filter if selected
-  const activeCampusId = state.selectedCampusId;
-  const tasks = (activeCampusId && activeCampusId !== 'ALL')
-    ? allTasks.filter(t => {
-        const cIds = typeof t.campus_ids === 'string' ? JSON.parse(t.campus_ids || '[]') : (t.campus_ids || []);
-        return cIds.includes(activeCampusId);
-      })
-    : allTasks;
+    const allTasks = Array.isArray(allTasksRaw) ? allTasksRaw : [];
+    const allTeachers = Array.isArray(allTeachersRaw) ? allTeachersRaw : [];
+    const requests = requestsRaw && typeof requestsRaw === 'object' ? requestsRaw : { count: 0 };
 
-  const teachers = (activeCampusId && activeCampusId !== 'ALL')
-    ? allTeachers.filter(u => u.campus_id === activeCampusId || (u.campuses || []).some(c => c.id === activeCampusId))
-    : allTeachers;
+    // Apply active campus filter if selected
+    const activeCampusId = state.selectedCampusId;
+    const tasks = (activeCampusId && activeCampusId !== 'ALL')
+      ? allTasks.filter(t => {
+          let cIds = [];
+          try {
+            cIds = Array.isArray(t.campus_ids) ? t.campus_ids : JSON.parse(t.campus_ids || '[]');
+          } catch {
+            cIds = [];
+          }
+          return cIds.includes(activeCampusId);
+        })
+      : allTasks;
 
-  const activeTasks = tasks.filter(t => t.status === 'ACTIVE' || t.status === 'PUBLISHED' || t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED');
-  const totalOverdue = activeTasks.reduce((acc, t) => acc + (parseInt(t.overdue, 10) || 0), 0);
-  const totalAssigned = activeTasks.reduce((acc, t) => acc + (parseInt(t.total_assigned, 10) || 0), 0);
-  const totalSubmitted = activeTasks.reduce((acc, t) => acc + (parseInt(t.submitted_on_time, 10) || 0) + (parseInt(t.submitted_late, 10) || 0), 0);
-  const firstName = (state.user ? state.user.first_name : '') || 'Administrator';
-  const todayDateString = new Date().toISOString().split('T')[0];
+    const teachers = (activeCampusId && activeCampusId !== 'ALL')
+      ? allTeachers.filter(u => u.campus_id === activeCampusId || (Array.isArray(u.campuses) && u.campuses.some(c => c.id === activeCampusId)))
+      : allTeachers;
+
+    const activeTasks = tasks.filter(t => t.status === 'ACTIVE' || t.status === 'PUBLISHED' || t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED');
+    const totalOverdue = activeTasks.reduce((acc, t) => acc + (parseInt(t.overdue, 10) || 0), 0);
+    const totalAssigned = activeTasks.reduce((acc, t) => acc + (parseInt(t.total_assigned, 10) || 0), 0);
+    const totalSubmitted = activeTasks.reduce((acc, t) => acc + (parseInt(t.submitted_on_time, 10) || 0) + (parseInt(t.submitted_late, 10) || 0), 0);
+    const firstName = (state.user ? state.user.first_name : '') || 'Administrator';
+    const todayDateString = new Date().toISOString().split('T')[0];
 
   // Compute Teacher Distribution Breakdowns
   const deptMap = {};
@@ -2018,6 +2038,17 @@ async function renderAdminDashboard(container) {
       </div>
     </div>
   `;
+  } catch (err) {
+    console.error('Error rendering admin dashboard:', err);
+    container.innerHTML = `
+      <div class="card" style="padding: 32px; text-align: center; margin-top: 20px;">
+        <i class="fa-solid fa-triangle-exclamation text-danger" style="font-size: 2.5rem; margin-bottom: 12px;"></i>
+        <h2 style="margin: 0 0 8px 0;">Failed to Load Dashboard Data</h2>
+        <p style="color: var(--text-muted); margin-bottom: 20px;">${escapeHtml(err.message || 'An unexpected error occurred while loading dashboard metrics.')}</p>
+        <button class="btn btn-primary" onclick="loadCurrentView()"><i class="fa-solid fa-arrow-rotate-left"></i> Refresh Dashboard</button>
+      </div>
+    `;
+  }
 }
 
 // Modal for teacher list breakdown drilldown
