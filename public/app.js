@@ -689,97 +689,318 @@ async function renderTeacherDashboard(container) {
 }
 
 async function renderTeacherTasks(container) {
-  const tasks = await api('/teacher/tasks');
+  state.teacherTaskTab = state.teacherTaskTab || 'ALL';
+  state.teacherTaskSearch = state.teacherTaskSearch || '';
+  state.teacherTaskSort = state.teacherTaskSort || 'deadline_asc';
+
+  const allTasks = await api('/teacher/tasks');
+  const now = new Date();
+
+  // Calculate Metrics
+  const totalCount = allTasks.length;
+  const pendingCount = allTasks.filter(t => (t.status === 'NOT_STARTED' || t.status === 'IN_PROGRESS' || t.draft_flag) && !(new Date(t.due_at) < now && t.status !== 'SUBMITTED_ON_TIME' && t.status !== 'SUBMITTED_LATE')).length;
+  const overdueCount = allTasks.filter(t => t.status === 'OVERDUE' || (new Date(t.due_at) < now && t.status !== 'SUBMITTED_ON_TIME' && t.status !== 'SUBMITTED_LATE')).length;
+  const completedCount = allTasks.filter(t => t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE').length;
+  const scheduledCount = allTasks.filter(t => t.is_scheduled || (t.open_at && new Date(t.open_at) > now)).length;
+
+  // Filter Tasks
+  let filteredTasks = allTasks.filter(t => {
+    const isPastDue = new Date(t.due_at) < now;
+    const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
+    const isScheduled = t.is_scheduled || (t.open_at && new Date(t.open_at) > now);
+
+    if (state.teacherTaskTab === 'PENDING') {
+      return !isSubmitted && !isPastDue && !isScheduled;
+    }
+    if (state.teacherTaskTab === 'OVERDUE') {
+      return !isSubmitted && isPastDue;
+    }
+    if (state.teacherTaskTab === 'COMPLETED') {
+      return isSubmitted;
+    }
+    if (state.teacherTaskTab === 'SCHEDULED') {
+      return isScheduled;
+    }
+    return true;
+  });
+
+  // Search Filter
+  if (state.teacherTaskSearch) {
+    const q = state.teacherTaskSearch.toLowerCase().trim();
+    filteredTasks = filteredTasks.filter(t => 
+      (t.title && t.title.toLowerCase().includes(q)) ||
+      (t.description && t.description.toLowerCase().includes(q)) ||
+      (t.status && t.status.toLowerCase().includes(q))
+    );
+  }
+
+  // Sort Tasks
+  filteredTasks.sort((a, b) => {
+    if (state.teacherTaskSort === 'deadline_asc') return new Date(a.due_at || 0) - new Date(b.due_at || 0);
+    if (state.teacherTaskSort === 'deadline_desc') return new Date(b.due_at || 0) - new Date(a.due_at || 0);
+    if (state.teacherTaskSort === 'assigned_desc') return new Date(b.assigned_at || 0) - new Date(a.assigned_at || 0);
+    if (state.teacherTaskSort === 'title_asc') return (a.title || '').localeCompare(b.title || '');
+    return 0;
+  });
+
+  function getUrgencyBadge(t) {
+    const isScheduled = t.is_scheduled || (t.open_at && new Date(t.open_at) > now);
+    const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
+    const isPastDue = new Date(t.due_at) < now;
+    const diffHours = (new Date(t.due_at) - now) / (1000 * 60 * 60);
+
+    if (isSubmitted) {
+      return `<span class="task-chip" style="background:var(--success-bg); color:var(--success-text);"><i class="fa-solid fa-check"></i> Completed</span>`;
+    }
+    if (isScheduled) {
+      return `<span class="task-chip" style="background:var(--info-bg); color:var(--info-text);"><i class="fa-regular fa-calendar"></i> Starts ${formatDate(t.open_at)}</span>`;
+    }
+    if (isPastDue) {
+      return `<span class="task-chip chip-urgent"><i class="fa-solid fa-triangle-exclamation"></i> Overdue</span>`;
+    }
+    if (diffHours <= 24) {
+      return `<span class="task-chip chip-deadline"><i class="fa-solid fa-fire"></i> Due in ${Math.max(1, Math.round(diffHours))}h</span>`;
+    }
+    if (diffHours <= 72) {
+      return `<span class="task-chip chip-deadline"><i class="fa-regular fa-clock"></i> Due in ${Math.round(diffHours / 24)} days</span>`;
+    }
+    return `<span class="task-chip"><i class="fa-regular fa-calendar"></i> ${formatDate(t.due_at)}</span>`;
+  }
+
+  function getStatusBadge(t) {
+    const isScheduled = t.is_scheduled || (t.open_at && new Date(t.open_at) > now);
+    const isPaused = t.task_status === 'PAUSED';
+    const isPastDue = new Date(t.due_at) < now;
+    const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
+    const isLateBlocked = !t.allow_late_submissions && isPastDue && !isSubmitted;
+    const canEditSubmitted = isSubmitted && t.allow_edit_submission && !isPaused && !isScheduled && (!isPastDue || t.allow_late_submissions !== false);
+
+    if (isScheduled) {
+      return `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled</span>`;
+    }
+    if (isPaused) {
+      return `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused</span>`;
+    }
+    if (isLateBlocked) {
+      return `<span class="badge badge-overdue"><i class="fa-solid fa-ban"></i> Closed</span>`;
+    }
+    if (canEditSubmitted) {
+      return `<span class="badge badge-submitted-on-time"><i class="fa-solid fa-circle-check"></i> Submitted</span> <span class="badge badge-in-progress" style="margin-left:4px;" title="Editing allowed"><i class="fa-solid fa-pen-to-square"></i> Editable</span>`;
+    }
+    return `<span class="badge badge-${t.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(t.status)}</span>`;
+  }
+
+  function getActionButton(t, fullWidth = false) {
+    const isScheduled = t.is_scheduled || (t.open_at && new Date(t.open_at) > now);
+    const isPaused = t.task_status === 'PAUSED';
+    const isPastDue = new Date(t.due_at) < now;
+    const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
+    const canEditSubmitted = isSubmitted && t.allow_edit_submission && !isPaused && !isScheduled && (!isPastDue || t.allow_late_submissions !== false);
+    const blockClass = fullWidth ? 'btn-block' : '';
+
+    if (canEditSubmitted) {
+      return `
+        <button class="btn btn-outline btn-sm ${blockClass}" onclick="openTaskSubmissionModal('${t.task_id}')" title="Edit and update your previous submission">
+          <i class="fa-solid fa-pen-to-square"></i> Edit Response
+        </button>
+      `;
+    }
+    if (isSubmitted) {
+      return `
+        <button class="btn btn-secondary btn-sm ${blockClass}" onclick="openTaskSubmissionModal('${t.task_id}')">
+          <i class="fa-solid fa-eye"></i> View Response
+        </button>
+      `;
+    }
+    return `
+      <button class="btn btn-primary btn-sm ${blockClass}" onclick="openTaskSubmissionModal('${t.task_id}')">
+        <i class="fa-solid ${t.draft_flag ? 'fa-pen-to-square' : (isScheduled ? 'fa-eye' : 'fa-paper-plane')}"></i> ${t.draft_flag ? 'Resume Draft' : (isScheduled ? 'View Details' : 'Complete Task')}
+      </button>
+    `;
+  }
 
   container.innerHTML = `
-    <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-list-check"></i> Assigned Institutional Tasks</h2>
+    <!-- 1. KPI Summary Metrics Row -->
+    <div class="task-summary-grid">
+      <div class="task-summary-card ${state.teacherTaskTab === 'ALL' ? 'active' : ''}" onclick="state.teacherTaskTab = 'ALL'; loadCurrentView();">
+        <div class="task-summary-icon total"><i class="fa-solid fa-list-check"></i></div>
+        <div class="task-summary-info">
+          <span class="task-summary-count">${totalCount}</span>
+          <span class="task-summary-label">Total Assigned</span>
+        </div>
       </div>
-      <div class="card-body">
-        ${tasks.length === 0 ? `
+      <div class="task-summary-card ${state.teacherTaskTab === 'PENDING' ? 'active' : ''}" onclick="state.teacherTaskTab = 'PENDING'; loadCurrentView();">
+        <div class="task-summary-icon pending"><i class="fa-solid fa-clock-rotate-left"></i></div>
+        <div class="task-summary-info">
+          <span class="task-summary-count">${pendingCount}</span>
+          <span class="task-summary-label">Pending / Action</span>
+        </div>
+      </div>
+      <div class="task-summary-card ${state.teacherTaskTab === 'OVERDUE' ? 'active' : ''}" onclick="state.teacherTaskTab = 'OVERDUE'; loadCurrentView();">
+        <div class="task-summary-icon overdue"><i class="fa-solid fa-circle-exclamation"></i></div>
+        <div class="task-summary-info">
+          <span class="task-summary-count">${overdueCount}</span>
+          <span class="task-summary-label">Overdue</span>
+        </div>
+      </div>
+      <div class="task-summary-card ${state.teacherTaskTab === 'COMPLETED' ? 'active' : ''}" onclick="state.teacherTaskTab = 'COMPLETED'; loadCurrentView();">
+        <div class="task-summary-icon completed"><i class="fa-solid fa-circle-check"></i></div>
+        <div class="task-summary-info">
+          <span class="task-summary-count">${completedCount}</span>
+          <span class="task-summary-label">Completed</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Responsive Filter & Search Toolbar -->
+    <div class="task-toolbar">
+      <div class="task-filter-pills">
+        <button class="task-filter-btn ${state.teacherTaskTab === 'ALL' ? 'active' : ''}" onclick="state.teacherTaskTab = 'ALL'; loadCurrentView();">
+          All <span class="badge-pill-count">${totalCount}</span>
+        </button>
+        <button class="task-filter-btn ${state.teacherTaskTab === 'PENDING' ? 'active' : ''}" onclick="state.teacherTaskTab = 'PENDING'; loadCurrentView();">
+          Pending <span class="badge-pill-count">${pendingCount}</span>
+        </button>
+        <button class="task-filter-btn ${state.teacherTaskTab === 'OVERDUE' ? 'active' : ''}" onclick="state.teacherTaskTab = 'OVERDUE'; loadCurrentView();">
+          Overdue <span class="badge-pill-count">${overdueCount}</span>
+        </button>
+        <button class="task-filter-btn ${state.teacherTaskTab === 'COMPLETED' ? 'active' : ''}" onclick="state.teacherTaskTab = 'COMPLETED'; loadCurrentView();">
+          Completed <span class="badge-pill-count">${completedCount}</span>
+        </button>
+        ${scheduledCount > 0 ? `
+          <button class="task-filter-btn ${state.teacherTaskTab === 'SCHEDULED' ? 'active' : ''}" onclick="state.teacherTaskTab = 'SCHEDULED'; loadCurrentView();">
+            Scheduled <span class="badge-pill-count">${scheduledCount}</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex:1; justify-content:flex-end;">
+        <div class="task-search-wrapper">
+          <i class="fa-solid fa-magnifying-glass search-icon"></i>
+          <input type="text" placeholder="Search tasks, deadlines..." value="${escapeHtml(state.teacherTaskSearch || '')}" oninput="state.teacherTaskSearch = this.value; debounceTeacherTaskSearch();" />
+          ${state.teacherTaskSearch ? `
+            <button class="clear-icon" onclick="state.teacherTaskSearch = ''; loadCurrentView();" title="Clear Search">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          ` : ''}
+        </div>
+
+        <select class="form-select form-select-sm" style="width: auto; min-width: 170px;" onchange="state.teacherTaskSort = this.value; loadCurrentView();">
+          <option value="deadline_asc" ${state.teacherTaskSort === 'deadline_asc' ? 'selected' : ''}>Deadline: Earliest First</option>
+          <option value="deadline_desc" ${state.teacherTaskSort === 'deadline_desc' ? 'selected' : ''}>Deadline: Latest First</option>
+          <option value="assigned_desc" ${state.teacherTaskSort === 'assigned_desc' ? 'selected' : ''}>Assigned: Newest First</option>
+          <option value="title_asc" ${state.teacherTaskSort === 'title_asc' ? 'selected' : ''}>Title: A to Z</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 3. Task Content (Desktop Table & Mobile Card Feed) -->
+    ${filteredTasks.length === 0 ? `
+      <div class="card">
+        <div class="card-body">
           <div class="empty-state">
             <i class="fa-solid fa-inbox"></i>
-            <h3>No Tasks Assigned</h3>
-            <p>You do not have any active or past task assignments.</p>
+            <h3>No Tasks Found</h3>
+            <p>${state.teacherTaskSearch ? 'No tasks match your search criteria. Try a different search term or clear filters.' : 'You have no tasks in this view.'}</p>
+            ${state.teacherTaskSearch || state.teacherTaskTab !== 'ALL' ? `
+              <button class="btn btn-outline btn-sm" style="margin-top:12px;" onclick="state.teacherTaskSearch = ''; state.teacherTaskTab = 'ALL'; loadCurrentView();">
+                <i class="fa-solid fa-arrow-rotate-left"></i> Reset All Filters
+              </button>
+            ` : ''}
           </div>
-        ` : `
+        </div>
+      </div>
+    ` : `
+      <!-- Desktop Table View -->
+      <div class="card tasks-desktop-view">
+        <div class="card-body" style="padding:0;">
           <div class="table-responsive">
-            <table class="table">
+            <table class="table" style="margin-bottom:0;">
               <thead>
                 <tr>
-                  <th>Task Title</th>
-                  <th>Assigned On</th>
-                  <th>Deadline</th>
-                  <th>Status</th>
-                  <th>Action</th>
+                  <th style="width: 38%;">Task Details & Instructions</th>
+                  <th style="width: 15%;">Assigned Date</th>
+                  <th style="width: 20%;">Submission Deadline</th>
+                  <th style="width: 14%;">Status</th>
+                  <th style="width: 13%; text-align:right;">Action</th>
                 </tr>
               </thead>
               <tbody>
-                ${tasks.map(t => {
-                  const now = new Date();
-                  const isScheduled = t.is_scheduled || (t.open_at && new Date(t.open_at) > now);
-                  const isPaused = t.task_status === 'PAUSED';
-                  const isPastDue = new Date(t.due_at) < now;
-                  const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
-                  const isLateBlocked = !t.allow_late_submissions && isPastDue && !isSubmitted;
-                  const canEditSubmitted = isSubmitted && t.allow_edit_submission && !isPaused && !isScheduled && (!isPastDue || t.allow_late_submissions !== false);
-
-                  let statusBadge = `<span class="badge badge-${t.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(t.status)}</span>`;
-                  if (isScheduled) {
-                    statusBadge = `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled (${formatDateTime(t.open_at)})</span>`;
-                  } else if (isPaused) {
-                    statusBadge = `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused by Admin</span>`;
-                  } else if (isLateBlocked) {
-                    statusBadge = `<span class="badge badge-overdue"><i class="fa-solid fa-ban"></i> Closed (No Late Submissions)</span>`;
-                  } else if (canEditSubmitted) {
-                    statusBadge += ` <span class="badge badge-in-progress" style="margin-left:4px;" title="Editing allowed by assignor"><i class="fa-solid fa-pen-to-square"></i> Editable</span>`;
-                  }
-
-                  let actionBtn = '';
-                  if (canEditSubmitted) {
-                    actionBtn = `
-                      <button class="btn btn-outline btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')" title="Edit and update your previous submission">
-                        <i class="fa-solid fa-pen-to-square"></i> Edit Response
-                      </button>
-                    `;
-                  } else if (isSubmitted) {
-                    actionBtn = `
-                      <button class="btn btn-secondary btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
-                        <i class="fa-solid fa-eye"></i> View Response
-                      </button>
-                    `;
-                  } else {
-                    actionBtn = `
-                      <button class="btn btn-primary btn-sm" onclick="openTaskSubmissionModal('${t.task_id}')">
-                        <i class="fa-solid ${t.draft_flag ? 'fa-pen-to-square' : (isScheduled ? 'fa-eye' : 'fa-paper-plane')}"></i> ${t.draft_flag ? 'Resume Draft' : (isScheduled ? 'View Details' : 'Complete Task')}
-                      </button>
-                    `;
-                  }
-
-                  return `
-                    <tr>
-                      <td>
-                        <strong>${escapeHtml(t.title)}</strong>
-                        ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin-top:3px;">${escapeHtml(t.description)}</p>` : ''}
-                      </td>
-                      <td>${formatDate(t.assigned_at)}</td>
-                      <td>
-                        <strong>${formatDateTime(t.due_at)}</strong>
-                        ${!t.allow_late_submissions ? `<div style="font-size:0.75rem; color:var(--danger); margin-top:2px;"><i class="fa-solid fa-lock"></i> Strict Deadline</div>` : ''}
-                      </td>
-                      <td>${statusBadge}</td>
-                      <td>${actionBtn}</td>
-                    </tr>
-                  `;
-                }).join('')}
+                ${filteredTasks.map(t => `
+                  <tr>
+                    <td>
+                      <div style="font-weight:700; color:var(--text-main); font-size:0.95rem; margin-bottom:3px;">
+                        ${escapeHtml(t.title)}
+                      </div>
+                      ${t.description ? `<div style="font-size:0.82rem; color:var(--text-muted); line-height:1.35; max-width:480px;">${escapeHtml(t.description)}</div>` : ''}
+                      ${t.draft_flag ? `<div style="margin-top:4px;"><span class="badge badge-draft" style="font-size:0.7rem;"><i class="fa-regular fa-floppy-disk"></i> Draft Saved</span></div>` : ''}
+                    </td>
+                    <td>
+                      <div style="font-size:0.86rem; color:var(--text-body);"><i class="fa-regular fa-calendar" style="color:var(--text-muted); margin-right:4px;"></i> ${formatDate(t.assigned_at)}</div>
+                    </td>
+                    <td>
+                      <div style="font-size:0.88rem; font-weight:700; color:var(--text-main);">
+                        ${formatDateTime(t.due_at)}
+                      </div>
+                      <div style="margin-top:4px; display:flex; gap:6px; flex-wrap:wrap;">
+                        ${getUrgencyBadge(t)}
+                        ${!t.allow_late_submissions ? `<span class="task-chip chip-urgent" title="No late submissions allowed"><i class="fa-solid fa-lock"></i> Strict</span>` : ''}
+                      </div>
+                    </td>
+                    <td>${getStatusBadge(t)}</td>
+                    <td style="text-align:right;">${getActionButton(t)}</td>
+                  </tr>
+                `).join('')}
               </tbody>
             </table>
           </div>
-        `}
+        </div>
       </div>
-    </div>
+
+      <!-- Mobile Cards Feed View -->
+      <div class="tasks-mobile-view">
+        ${filteredTasks.map(t => {
+          const isPastDue = new Date(t.due_at) < now;
+          const isSubmitted = t.status === 'SUBMITTED_ON_TIME' || t.status === 'SUBMITTED_LATE';
+          let cardStatusClass = 'status-pending';
+          if (isSubmitted) cardStatusClass = 'status-submitted';
+          else if (isPastDue) cardStatusClass = 'status-overdue';
+
+          return `
+            <div class="task-card ${cardStatusClass}">
+              <div class="task-card-top">
+                <div class="task-card-title-group">
+                  <div class="task-card-title">${escapeHtml(t.title)}</div>
+                </div>
+                ${getStatusBadge(t)}
+              </div>
+
+              ${t.description ? `<div class="task-card-desc">${escapeHtml(t.description)}</div>` : ''}
+
+              <div class="task-card-chips">
+                ${getUrgencyBadge(t)}
+                <span class="task-chip"><i class="fa-regular fa-calendar"></i> Assigned: ${formatDate(t.assigned_at)}</span>
+                ${!t.allow_late_submissions ? `<span class="task-chip chip-urgent"><i class="fa-solid fa-lock"></i> Strict Deadline</span>` : ''}
+                ${t.draft_flag ? `<span class="task-chip" style="background:var(--slate-badge-bg); color:var(--slate-badge-text);"><i class="fa-regular fa-floppy-disk"></i> Draft Saved</span>` : ''}
+              </div>
+
+              <div class="task-card-actions">
+                ${getActionButton(t, true)}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `}
   `;
+}
+
+let teacherTaskSearchDebounceTimer = null;
+function debounceTeacherTaskSearch() {
+  clearTimeout(teacherTaskSearchDebounceTimer);
+  teacherTaskSearchDebounceTimer = setTimeout(() => {
+    loadCurrentView();
+  }, 250);
 }
 
 async function renderTeacherHistory(container) {
@@ -916,62 +1137,103 @@ async function openTaskSubmissionModal(taskId) {
   const canEdit = !isScheduled && !isPaused && (!isSubmitted || task.allow_edit_submission) && !isLateBlocked;
 
   const html = `
-    <div class="card-header">
-      <div>
-        <h3>${escapeHtml(task.title)}</h3>
-        <span style="font-size:0.8rem; color:var(--text-muted);">Due: ${formatDateTime(assignment.due_at)}</span>
+    <div class="card-header" style="border-bottom:1px solid var(--border-color); padding: 18px 24px;">
+      <div style="flex:1; min-width:0; padding-right:12px;">
+        <div style="font-size:0.75rem; font-weight:700; color:var(--accent-orange); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;">
+          Institutional Task Execution
+        </div>
+        <h3 style="margin:0 0 6px 0; font-size:1.25rem; font-weight:700; color:var(--text-main); word-break:break-word;">
+          ${escapeHtml(task.title)}
+        </h3>
+        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+          <span class="task-chip chip-deadline">
+            <i class="fa-regular fa-clock"></i> Due: <strong>${formatDateTime(assignment.due_at)}</strong>
+          </span>
+          ${!task.allow_late_submissions ? `<span class="task-chip chip-urgent"><i class="fa-solid fa-lock"></i> Strict Deadline</span>` : ''}
+          ${submission && submission.draft_flag ? `<span class="task-chip" style="background:var(--slate-badge-bg); color:var(--slate-badge-text);"><i class="fa-regular fa-floppy-disk"></i> Draft in Progress</span>` : ''}
+        </div>
       </div>
-      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+      <button class="btn-icon" onclick="closeModal()" title="Close Modal"><i class="fa-solid fa-xmark"></i></button>
     </div>
-    <div class="card-body">
+    
+    <div class="card-body" style="padding:22px 24px;">
       ${isScheduled ? `
-        <div style="background:rgba(59,130,246,0.1); border-left:4px solid var(--primary); padding:12px; margin-bottom:16px; border-radius:4px;">
-          <strong style="color:var(--primary);"><i class="fa-solid fa-clock"></i> Scheduled Task</strong>
-          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">This task is scheduled to open on <strong>${formatDateTime(task.open_at)}</strong>. Responses cannot be submitted until then.</p>
+        <div style="background:var(--info-bg); border-left:4px solid var(--info); padding:14px 16px; margin-bottom:20px; border-radius:var(--radius-md);">
+          <div style="font-weight:700; color:var(--info-text); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-calendar-clock"></i> Scheduled Task
+          </div>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-body);">This task opens on <strong>${formatDateTime(task.open_at)}</strong>. Submissions will unlock at that time.</p>
         </div>
       ` : ''}
 
       ${isPaused ? `
-        <div style="background:rgba(234,179,8,0.1); border-left:4px solid #ca8a04; padding:12px; margin-bottom:16px; border-radius:4px;">
-          <strong style="color:#ca8a04;"><i class="fa-solid fa-pause"></i> Task Paused</strong>
-          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">This task has been temporarily paused by administration. Submissions are suspended.</p>
+        <div style="background:var(--warning-bg); border-left:4px solid var(--warning); padding:14px 16px; margin-bottom:20px; border-radius:var(--radius-md);">
+          <div style="font-weight:700; color:var(--warning-text); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-pause"></i> Task Paused by Administration
+          </div>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-body);">Submissions are temporarily paused. You may review your current draft, but submissions cannot be posted now.</p>
         </div>
       ` : ''}
 
       ${isLateBlocked ? `
-        <div style="background:rgba(239,68,68,0.1); border-left:4px solid var(--danger); padding:12px; margin-bottom:16px; border-radius:4px;">
-          <strong style="color:var(--danger);"><i class="fa-solid fa-lock"></i> Late Submissions Closed</strong>
-          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">The deadline has expired and late submissions are not allowed for this task.</p>
+        <div style="background:var(--danger-bg); border-left:4px solid var(--danger); padding:14px 16px; margin-bottom:20px; border-radius:var(--radius-md);">
+          <div style="font-weight:700; color:var(--danger-text); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-lock"></i> Deadline Expired (Submissions Closed)
+          </div>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-body);">The submission window has closed and late submissions are disabled for this task.</p>
         </div>
       ` : ''}
 
       ${(isSubmitted && task.allow_edit_submission && canEdit) ? `
-        <div style="background:rgba(16,185,129,0.1); border-left:4px solid var(--success); padding:12px; margin-bottom:16px; border-radius:4px;">
-          <strong style="color:var(--success);"><i class="fa-solid fa-circle-check"></i> Response Previously Submitted (${formatDateTime(submission.submitted_at)})</strong>
-          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">The assignor allows editing responses. You can modify your answers below and click <strong>Update Response</strong> to resubmit.</p>
+        <div style="background:var(--success-bg); border-left:4px solid var(--success); padding:14px 16px; margin-bottom:20px; border-radius:var(--radius-md);">
+          <div style="font-weight:700; color:var(--success-text); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-circle-check"></i> Response Submitted on ${formatDateTime(submission.submitted_at)}
+          </div>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-body);">The assignor allows response editing. You may adjust your responses below and click <strong>Update Response</strong>.</p>
         </div>
       ` : (isSubmitted && !task.allow_edit_submission ? `
-        <div style="background:rgba(59,130,246,0.1); border-left:4px solid var(--primary); padding:12px; margin-bottom:16px; border-radius:4px;">
-          <strong style="color:var(--primary);"><i class="fa-solid fa-circle-check"></i> Response Submitted (${formatDateTime(submission.submitted_at)})</strong>
-          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-muted);">Your response has been finalized and recorded. Editing after submission is not enabled for this task.</p>
+        <div style="background:var(--primary-light); border-left:4px solid var(--primary); padding:14px 16px; margin-bottom:20px; border-radius:var(--radius-md);">
+          <div style="font-weight:700; color:var(--primary); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-circle-check"></i> Final Response Recorded (${formatDateTime(submission.submitted_at)})
+          </div>
+          <p style="margin:4px 0 0 0; font-size:0.88rem; color:var(--text-body);">Your submission has been recorded. Response modifications are locked.</p>
         </div>
       ` : '')}
 
-      ${task.description ? `<p style="margin-bottom: 20px; color:var(--text-muted);">${escapeHtml(task.description)}</p>` : ''}
+      ${task.description ? `
+        <div style="background:var(--border-subtle); border-radius:var(--radius-md); padding:14px 18px; margin-bottom:22px;">
+          <div style="font-size:0.78rem; font-weight:700; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">
+            <i class="fa-solid fa-circle-info"></i> Instructions & Context
+          </div>
+          <div style="font-size:0.92rem; color:var(--text-main); line-height:1.5;">${escapeHtml(task.description)}</div>
+        </div>
+      ` : ''}
       
       <form id="form-task-submission">
-        ${questions.map((q, idx) => `
-          <div class="form-group question-block">
-            <label>
-              <strong>${idx + 1}. ${escapeHtml(q.label)}</strong>
-              ${q.required ? `<span class="text-danger">*</span>` : ''}
-            </label>
-            ${renderQuestionInput(q, answers[q.key], !canEdit)}
+        ${questions.length === 0 ? `
+          <div class="empty-state" style="padding:20px;">
+            <p>No questions are configured for this task. Simply click below to confirm completion.</p>
+          </div>
+        ` : questions.map((q, idx) => `
+          <div class="question-card">
+            <div class="question-card-header">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span class="question-index-badge">Q${idx + 1}</span>
+                <span class="question-label-text">
+                  ${escapeHtml(q.label || `Question ${idx + 1}`)}
+                  ${q.required ? `<span class="text-danger" title="Required field">*</span>` : ''}
+                </span>
+              </div>
+              <span class="task-chip" style="font-size:0.7rem; text-transform:capitalize;">${(q.type || 'short_text').replace(/_/g, ' ')}</span>
+            </div>
+            <div style="margin-top:10px;">
+              ${renderQuestionInput(q, answers[q.key], !canEdit)}
+            </div>
           </div>
         `).join('')}
 
         ${canEdit ? `
-          <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:28px; padding-top:16px; border-top:1px solid var(--border-color); flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary" onclick="submitTaskResponse('${taskId}', true)">
               <i class="fa-regular fa-floppy-disk"></i> Save Draft
             </button>
@@ -980,7 +1242,7 @@ async function openTaskSubmissionModal(taskId) {
             </button>
           </div>
         ` : `
-          <div style="display:flex; justify-content:flex-end; margin-top:20px;">
+          <div style="display:flex; justify-content:flex-end; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
             <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
           </div>
         `}
@@ -996,53 +1258,63 @@ function renderQuestionInput(q, value, disabled = false) {
   const key = escapeHtml(q.key);
 
   if (q.type === 'number') {
-    return `<input type="number" name="q_${key}" class="form-input" value="${value || ''}" ${q.required ? 'required' : ''} ${dis} />`;
+    return `<input type="number" name="q_${key}" class="form-input" placeholder="Enter number..." value="${value !== undefined && value !== null ? value : ''}" ${q.required ? 'required' : ''} ${dis} />`;
   }
   if (q.type === 'long_text') {
-    return `<textarea name="q_${key}" class="form-textarea" ${q.required ? 'required' : ''} ${dis}>${escapeHtml(value || '')}</textarea>`;
+    return `<textarea name="q_${key}" class="form-textarea" placeholder="Type your detailed response..." ${q.required ? 'required' : ''} ${dis}>${escapeHtml(value || '')}</textarea>`;
   }
   if (q.type === 'date') {
     return `<input type="date" name="q_${key}" class="form-input" value="${value || ''}" ${q.required ? 'required' : ''} ${dis} />`;
   }
   if (q.type === 'single_choice' && q.options) {
-    return q.options.map(opt => `
-      <label class="checkbox-label" style="margin-top:6px;">
-        <input type="radio" name="q_${key}" value="${escapeHtml(opt)}" ${value === opt ? 'checked' : ''} ${dis} />
-        ${escapeHtml(opt)}
-      </label>
-    `).join('');
+    return `
+      <div class="choice-tiles-grid">
+        ${q.options.map(opt => `
+          <label class="choice-tile">
+            <input type="radio" name="q_${key}" value="${escapeHtml(opt)}" ${value === opt ? 'checked' : ''} ${dis} />
+            <span>${escapeHtml(opt)}</span>
+          </label>
+        `).join('')}
+      </div>
+    `;
   }
   if (q.type === 'multiple_choice' && q.options) {
-    const arr = Array.isArray(value) ? value : [];
-    return q.options.map(opt => `
-      <label class="checkbox-label" style="margin-top:6px;">
-        <input type="checkbox" name="q_${key}" value="${escapeHtml(opt)}" ${arr.includes(opt) ? 'checked' : ''} ${dis} />
-        ${escapeHtml(opt)}
-      </label>
-    `).join('');
+    const arr = Array.isArray(value) ? value : (typeof value === 'string' ? [value] : []);
+    return `
+      <div class="choice-tiles-grid">
+        ${q.options.map(opt => `
+          <label class="choice-tile">
+            <input type="checkbox" name="q_${key}" value="${escapeHtml(opt)}" ${arr.includes(opt) ? 'checked' : ''} ${dis} />
+            <span>${escapeHtml(opt)}</span>
+          </label>
+        `).join('')}
+      </div>
+    `;
   }
   if (q.type === 'yes_no') {
     return `
-      <div style="display:flex; gap:20px; margin-top:6px;">
-        <label class="checkbox-label">
-          <input type="radio" name="q_${key}" value="Yes" ${value === 'Yes' ? 'checked' : ''} ${dis} /> Yes
+      <div style="display:flex; gap:12px; margin-top:4px;">
+        <label class="choice-tile" style="flex:1; justify-content:center;">
+          <input type="radio" name="q_${key}" value="Yes" ${value === 'Yes' ? 'checked' : ''} ${dis} />
+          <span><i class="fa-solid fa-check text-success" style="margin-right:4px;"></i> Yes</span>
         </label>
-        <label class="checkbox-label">
-          <input type="radio" name="q_${key}" value="No" ${value === 'No' ? 'checked' : ''} ${dis} /> No
+        <label class="choice-tile" style="flex:1; justify-content:center;">
+          <input type="radio" name="q_${key}" value="No" ${value === 'No' ? 'checked' : ''} ${dis} />
+          <span><i class="fa-solid fa-xmark text-danger" style="margin-right:4px;"></i> No</span>
         </label>
       </div>
     `;
   }
   if (q.type === 'dropdown' && q.options) {
     return `
-      <select name="q_${key}" class="form-select" ${dis}>
-        <option value="">-- Select Option --</option>
+      <select name="q_${key}" class="form-select" ${dis} ${q.required ? 'required' : ''}>
+        <option value="">-- Select an option --</option>
         ${q.options.map(opt => `<option value="${escapeHtml(opt)}" ${value === opt ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
       </select>
     `;
   }
   // Default short_text
-  return `<input type="text" name="q_${key}" class="form-input" value="${escapeHtml(value || '')}" ${q.required ? 'required' : ''} ${dis} />`;
+  return `<input type="text" name="q_${key}" class="form-input" placeholder="Enter answer..." value="${escapeHtml(value || '')}" ${q.required ? 'required' : ''} ${dis} />`;
 }
 
 async function submitTaskResponse(taskId, isDraft = false) {
@@ -1605,7 +1877,7 @@ async function renderAdminTasks(container) {
     tasks = tasks.filter(t => t.task_type === state.taskFilters.taskType);
   }
 
-  // 4. Filter by Search (Title, Assignor, Description)
+  // 4. Filter by Search (Title, Assignor, Description, Campus)
   if (state.taskFilters.search) {
     const q = state.taskFilters.search.toLowerCase().trim();
     tasks = tasks.filter(t => 
@@ -1627,16 +1899,31 @@ async function renderAdminTasks(container) {
     if (sortBy === 'completion_asc') return (a.completion_rate || 0) - (b.completion_rate || 0);
     if (sortBy === 'assigned_desc') return (b.total_assigned || 0) - (a.total_assigned || 0);
     if (sortBy === 'created_desc') return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-    // Default: Priority / sort_order ASC
     return (a.sort_order - b.sort_order) || (new Date(b.created_at || 0) - new Date(a.created_at || 0));
   });
 
+  function getAdminStatusBadge(t) {
+    if (t.status === 'SCHEDULED' || t.is_scheduled) {
+      return `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled</span>`;
+    }
+    if (t.status === 'PAUSED') {
+      return `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused</span>`;
+    }
+    if (t.status === 'ARCHIVED') {
+      return `<span class="badge badge-archived"><i class="fa-solid fa-box-archive"></i> Archived</span>`;
+    }
+    if (t.status === 'ACTIVE' || t.status === 'PUBLISHED') {
+      return `<span class="badge badge-active"><i class="fa-solid fa-circle-check"></i> Active</span>`;
+    }
+    return `<span class="badge badge-${(t.status || 'draft').toLowerCase()}">${t.status}</span>`;
+  }
+
   container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom: 16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; margin-bottom: 20px;">
       <div>
         <h2 style="margin:0 0 4px 0;"><i class="fa-solid fa-list-check"></i> Tasks Directory</h2>
         <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">
-          Create, schedule, organize and track institutional tasks across campuses.
+          Create, schedule, configure audience rules and track real-time faculty submissions.
         </p>
       </div>
       ${hasPermission('tasks.create') ? `
@@ -1664,11 +1951,11 @@ async function renderAdminTasks(container) {
 
     <!-- 2. Responsive Filter & Sort Toolbar -->
     <div class="filter-sort-bar">
-      <div class="filter-sort-group">
+      <div class="filter-sort-group" style="flex:1;">
         <!-- Campus Filter -->
         <div style="display:flex; align-items:center; gap:6px;">
-          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted); white-space:nowrap;"><i class="fa-solid fa-building-columns"></i> Campus:</label>
-          <select class="form-select form-select-sm" style="min-width:150px;" onchange="state.taskFilters.campusId = this.value; loadCurrentView();">
+          <label style="font-size:0.82rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; white-space:nowrap;"><i class="fa-solid fa-building-columns"></i> Campus:</label>
+          <select class="form-select form-select-sm" style="min-width:140px;" onchange="state.taskFilters.campusId = this.value; loadCurrentView();">
             <option value="">All Campuses</option>
             ${campuses.map(c => `<option value="${c.id}" ${state.taskFilters.campusId === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
           </select>
@@ -1676,20 +1963,20 @@ async function renderAdminTasks(container) {
 
         <!-- Task Type Filter -->
         <div style="display:flex; align-items:center; gap:6px;">
-          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted); white-space:nowrap;"><i class="fa-solid fa-tag"></i> Type:</label>
-          <select class="form-select form-select-sm" style="min-width:130px;" onchange="state.taskFilters.taskType = this.value; loadCurrentView();">
+          <label style="font-size:0.82rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; white-space:nowrap;"><i class="fa-solid fa-tag"></i> Type:</label>
+          <select class="form-select form-select-sm" style="min-width:120px;" onchange="state.taskFilters.taskType = this.value; loadCurrentView();">
             <option value="">All Types</option>
             <option value="ONE_TIME" ${state.taskFilters.taskType === 'ONE_TIME' ? 'selected' : ''}>One-Time</option>
-            <option value="RECURRING_INSTANCE" ${state.taskFilters.taskType === 'RECURRING_INSTANCE' ? 'selected' : ''}>Recurring Instance</option>
+            <option value="RECURRING_INSTANCE" ${state.taskFilters.taskType === 'RECURRING_INSTANCE' ? 'selected' : ''}>Recurring</option>
           </select>
         </div>
 
         <!-- Search Box -->
-        <div style="position:relative; display:flex; align-items:center;">
-          <input type="text" class="form-input form-input-sm" style="padding-left:28px; width:220px;" placeholder="Search title, assignor, campus..." value="${escapeHtml(state.taskFilters.search || '')}" oninput="state.taskFilters.search = this.value; debounceTaskSearch();" />
-          <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
+        <div class="task-search-wrapper" style="min-width:200px; max-width:280px;">
+          <i class="fa-solid fa-magnifying-glass search-icon"></i>
+          <input type="text" placeholder="Search title, assignor..." value="${escapeHtml(state.taskFilters.search || '')}" oninput="state.taskFilters.search = this.value; debounceTaskSearch();" />
           ${state.taskFilters.search ? `
-            <button type="button" onclick="state.taskFilters.search = ''; loadCurrentView();" style="position:absolute; right:8px; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:0.8rem;">
+            <button class="clear-icon" onclick="state.taskFilters.search = ''; loadCurrentView();" title="Clear Search">
               <i class="fa-solid fa-xmark"></i>
             </button>
           ` : ''}
@@ -1699,7 +1986,7 @@ async function renderAdminTasks(container) {
       <div class="filter-sort-group">
         <!-- Sort Selector -->
         <div style="display:flex; align-items:center; gap:6px;">
-          <label style="font-size:0.85rem; font-weight:600; color:var(--text-muted); white-space:nowrap;"><i class="fa-solid fa-arrow-down-short-wide"></i> Sort By:</label>
+          <label style="font-size:0.82rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; white-space:nowrap;"><i class="fa-solid fa-arrow-down-short-wide"></i> Sort:</label>
           <select class="form-select form-select-sm" style="min-width:160px;" onchange="state.taskFilters.sortBy = this.value; loadCurrentView();">
             <option value="priority" ${sortBy === 'priority' ? 'selected' : ''}>Manual Priority (Default)</option>
             <option value="deadline_asc" ${sortBy === 'deadline_asc' ? 'selected' : ''}>Deadline: Earliest First</option>
@@ -1721,129 +2008,187 @@ async function renderAdminTasks(container) {
       </div>
     </div>
 
-    <!-- 3. Tasks Table -->
-    <div class="card">
-      <div class="card-body" style="padding:0;">
-        <div class="table-responsive">
-          <table class="table" style="margin-bottom:0;">
-            <thead>
-              <tr>
-                <th style="width: 70px; text-align:center;">Priority</th>
-                <th>Task Details & Info</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th style="text-align:center;">Assigned</th>
-                <th>Schedule & Deadline</th>
-                <th>Completion</th>
-                <th style="text-align:right;">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${tasks.length === 0 ? `
-                <tr>
-                  <td colspan="8" class="empty-state" style="padding:40px 20px;">
-                    <i class="fa-solid fa-folder-open" style="font-size:2rem; color:var(--text-muted); margin-bottom:10px; display:block;"></i>
-                    <p style="font-size:1rem; font-weight:600; margin:0 0 6px 0;">No tasks found in "${state.taskTab}"</p>
-                    <small style="color:var(--text-muted);">Try adjusting your search or campus filters, or create a new task.</small>
-                  </td>
-                </tr>
-              ` : tasks.map((t, idx) => {
-                const isFirst = idx === 0;
-                const isLast = idx === tasks.length - 1;
-
-                let statusBadge = `<span class="badge badge-${t.status.toLowerCase()}">${t.status}</span>`;
-                if (t.status === 'SCHEDULED' || t.is_scheduled) {
-                  statusBadge = `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled</span>`;
-                } else if (t.status === 'PAUSED') {
-                  statusBadge = `<span class="badge badge-paused"><i class="fa-solid fa-pause"></i> Paused</span>`;
-                } else if (t.status === 'ARCHIVED') {
-                  statusBadge = `<span class="badge badge-archived"><i class="fa-solid fa-box-archive"></i> Archived</span>`;
-                } else if (t.status === 'ACTIVE' || t.status === 'PUBLISHED') {
-                  statusBadge = `<span class="badge badge-active"><i class="fa-solid fa-circle-check"></i> Active</span>`;
-                }
-
-                return `
-                  <tr>
-                    <td style="text-align:center;">
-                      <div style="display:flex; flex-direction:column; gap:2px; align-items:center;">
-                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isFirst || sortBy !== 'priority' ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'UP')" title="Move Up in Priority">
-                          <i class="fa-solid fa-arrow-up"></i>
-                        </button>
-                        <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isLast || sortBy !== 'priority' ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'DOWN')" title="Move Down in Priority">
-                          <i class="fa-solid fa-arrow-down"></i>
-                        </button>
-                      </div>
-                    </td>
-                    <td>
-                      <div style="font-size:0.95rem; font-weight:700; color:var(--text-main); margin-bottom:4px;">
-                        ${escapeHtml(t.title)}
-                      </div>
-                      <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
-                        <div class="task-meta-tag">
-                          <i class="fa-solid fa-user-pen"></i> Assigned by: <strong style="color:var(--text-main);">${escapeHtml(t.creator_name || 'Super Administrator')}</strong>
-                        </div>
-                        <div class="task-meta-tag">
-                          <i class="fa-solid fa-building-columns"></i> Campus: <span class="badge badge-secondary" style="font-size:0.72rem;">${escapeHtml(t.campus_names || 'All Campuses')}</span>
-                        </div>
-                      </div>
-                      ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin:4px 0 0 0; max-width:420px;">${escapeHtml(t.description)}</p>` : ''}
-                    </td>
-                    <td>
-                      <span class="badge badge-not-started" style="font-size:0.75rem;">${t.task_type === 'RECURRING_INSTANCE' ? 'RECURRING' : t.task_type}</span>
-                    </td>
-                    <td>
-                      <div style="display:flex; flex-direction:column; gap:4px;">
-                        ${statusBadge}
-                        <select class="form-select form-select-sm" style="font-size:0.75rem; padding:2px 4px; width:100px;" onchange="changeTaskStatus('${t.id}', this.value)" title="Quick Status Switch">
-                          <option value="ACTIVE" ${t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED' ? 'selected' : ''}>Active</option>
-                          <option value="PAUSED" ${t.raw_status === 'PAUSED' ? 'selected' : ''}>Paused</option>
-                          <option value="ARCHIVED" ${t.raw_status === 'ARCHIVED' ? 'selected' : ''}>Archived</option>
-                          ${t.raw_status === 'DRAFT' ? '<option value="DRAFT" selected>Draft</option>' : ''}
-                        </select>
-                      </div>
-                    </td>
-                    <td style="text-align:center;">
-                      <button type="button" class="btn-badge-interactive" onclick="openTaskAssignedTeachersModal('${t.id}', '${escapeHtml(t.title).replace(/'/g, "\\'")}')" title="Click to view full list of assigned teachers">
-                        <span>${t.total_assigned || 0}</span>
-                        <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:0.65rem;"></i>
-                      </button>
-                    </td>
-                    <td>
-                      <div style="font-size:0.85rem;"><i class="fa-regular fa-clock text-danger"></i> Due: <strong>${formatDateTime(t.deadline_at)}</strong></div>
-                      ${t.open_at ? `<div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">Opens: ${formatDateTime(t.open_at)}</div>` : ''}
-                      ${!t.allow_late_submissions ? `<div style="font-size:0.75rem; color:var(--danger); font-weight:600;"><i class="fa-solid fa-lock"></i> Late Closed</div>` : `<div style="font-size:0.75rem; color:var(--success);"><i class="fa-solid fa-lock-open"></i> Late Allowed</div>`}
-                    </td>
-                    <td>
-                      <div style="display:flex; align-items:center; gap:6px;">
-                        <div style="width:50px; height:6px; background:var(--border-color); border-radius:3px; overflow:hidden;">
-                          <div style="height:100%; width:${t.completion_rate || 0}%; background:var(--primary);"></div>
-                        </div>
-                        <strong style="font-size:0.85rem;">${t.completion_rate || 0}%</strong>
-                      </div>
-                    </td>
-                    <td style="text-align:right;">
-                      <div style="display:inline-flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
-                        <button class="btn btn-primary btn-sm" onclick="openTaskEditor('${t.id}')" title="Edit Task Questions, Audience & Rules">
-                          <i class="fa-solid fa-pen-to-square"></i> Edit
-                        </button>
-                        <button class="btn btn-secondary btn-sm" onclick="openTaskReport('${t.id}')" title="View Response Dashboard">
-                          <i class="fa-solid fa-chart-pie"></i> Report
-                        </button>
-                        ${t.status === 'DRAFT' && hasPermission('tasks.publish') ? `
-                          <button class="btn btn-success btn-sm" onclick="publishTaskDirectly('${t.id}')">
-                            <i class="fa-solid fa-upload"></i> Publish
-                          </button>
-                        ` : ''}
-                      </div>
-                    </td>
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
+    <!-- 3. Task Content (Desktop Table & Mobile Card Feed) -->
+    ${tasks.length === 0 ? `
+      <div class="card">
+        <div class="card-body">
+          <div class="empty-state">
+            <i class="fa-solid fa-folder-open"></i>
+            <h3>No Tasks Found in "${state.taskTab}"</h3>
+            <p>Try adjusting your search query, selecting different campus filters, or creating a new task.</p>
+            ${(state.taskFilters.campusId || state.taskFilters.taskType || state.taskFilters.search || sortBy !== 'priority') ? `
+              <button class="btn btn-outline btn-sm" style="margin-top:12px;" onclick="state.taskFilters = { campusId: '', search: '', taskType: '', sortBy: 'priority' }; loadCurrentView();">
+                <i class="fa-solid fa-arrow-rotate-left"></i> Reset Filters
+              </button>
+            ` : ''}
+          </div>
         </div>
       </div>
-    </div>
+    ` : `
+      <!-- Desktop Table View -->
+      <div class="card tasks-desktop-view">
+        <div class="card-body" style="padding:0;">
+          <div class="table-responsive">
+            <table class="table" style="margin-bottom:0;">
+              <thead>
+                <tr>
+                  <th style="width: 60px; text-align:center;">Order</th>
+                  <th style="width: 32%;">Task Details & Scope</th>
+                  <th style="width: 10%;">Type</th>
+                  <th style="width: 12%;">Status</th>
+                  <th style="width: 10%; text-align:center;">Assigned</th>
+                  <th style="width: 16%;">Schedule & Deadline</th>
+                  <th style="width: 10%;">Completion</th>
+                  <th style="width: 10%; text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tasks.map((t, idx) => {
+                  const isFirst = idx === 0;
+                  const isLast = idx === tasks.length - 1;
+
+                  return `
+                    <tr>
+                      <td style="text-align:center;">
+                        <div style="display:flex; flex-direction:column; gap:2px; align-items:center;">
+                          <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isFirst || sortBy !== 'priority' ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'UP')" title="Move Up in Priority">
+                            <i class="fa-solid fa-arrow-up"></i>
+                          </button>
+                          <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.75rem;" ${isLast || sortBy !== 'priority' ? 'disabled' : ''} onclick="reorderTask('${t.id}', 'DOWN')" title="Move Down in Priority">
+                            <i class="fa-solid fa-arrow-down"></i>
+                          </button>
+                        </div>
+                      </td>
+                      <td>
+                        <div style="font-size:0.95rem; font-weight:700; color:var(--text-main); margin-bottom:4px;">
+                          ${escapeHtml(t.title)}
+                        </div>
+                        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                          <span class="task-meta-tag">
+                            <i class="fa-solid fa-user-pen"></i> By: <strong>${escapeHtml(t.creator_name || 'Super Admin')}</strong>
+                          </span>
+                          <span class="task-chip chip-campus" style="font-size:0.72rem;">
+                            <i class="fa-solid fa-building-columns"></i> ${escapeHtml(t.campus_names || 'All Campuses')}
+                          </span>
+                        </div>
+                        ${t.description ? `<div style="font-size:0.8rem; color:var(--text-muted); margin:4px 0 0 0; max-width:420px; line-height:1.35;">${escapeHtml(t.description)}</div>` : ''}
+                      </td>
+                      <td>
+                        <span class="badge badge-not-started" style="font-size:0.72rem;">${t.task_type === 'RECURRING_INSTANCE' ? 'RECURRING' : t.task_type}</span>
+                      </td>
+                      <td>
+                        <div style="display:flex; flex-direction:column; gap:4px;">
+                          ${getAdminStatusBadge(t)}
+                          <select class="form-select form-select-sm" style="font-size:0.75rem; padding:2px 4px; width:95px;" onchange="changeTaskStatus('${t.id}', this.value)" title="Quick Status Switch">
+                            <option value="ACTIVE" ${t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED' ? 'selected' : ''}>Active</option>
+                            <option value="PAUSED" ${t.raw_status === 'PAUSED' ? 'selected' : ''}>Paused</option>
+                            <option value="ARCHIVED" ${t.raw_status === 'ARCHIVED' ? 'selected' : ''}>Archived</option>
+                            ${t.raw_status === 'DRAFT' ? '<option value="DRAFT" selected>Draft</option>' : ''}
+                          </select>
+                        </div>
+                      </td>
+                      <td style="text-align:center;">
+                        <button type="button" class="btn-badge-interactive" onclick="openTaskAssignedTeachersModal('${t.id}', '${escapeHtml(t.title).replace(/'/g, "\\'")}')" title="Click to view assigned teachers">
+                          <i class="fa-solid fa-users" style="font-size:0.75rem;"></i>
+                          <span>${t.total_assigned || 0}</span>
+                        </button>
+                      </td>
+                      <td>
+                        <div style="font-size:0.86rem; font-weight:600; color:var(--text-main);">
+                          <i class="fa-regular fa-clock text-danger" style="margin-right:4px;"></i> Due: ${formatDateTime(t.deadline_at)}
+                        </div>
+                        ${t.open_at ? `<div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">Opens: ${formatDateTime(t.open_at)}</div>` : ''}
+                        ${!t.allow_late_submissions ? `<div style="font-size:0.75rem; color:var(--danger); font-weight:600; margin-top:2px;"><i class="fa-solid fa-lock"></i> Strict Deadline</div>` : `<div style="font-size:0.75rem; color:var(--success); margin-top:2px;"><i class="fa-solid fa-lock-open"></i> Late Allowed</div>`}
+                      </td>
+                      <td>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <div style="flex:1; height:6px; background:var(--border-subtle); border-radius:3px; overflow:hidden; min-width:45px;">
+                            <div style="height:100%; width:${t.completion_rate || 0}%; background:var(--primary);"></div>
+                          </div>
+                          <strong style="font-size:0.82rem;">${t.completion_rate || 0}%</strong>
+                        </div>
+                      </td>
+                      <td style="text-align:right;">
+                        <div style="display:inline-flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                          <button class="btn btn-primary btn-sm" onclick="openTaskEditor('${t.id}')" title="Edit Task Questions, Audience & Rules">
+                            <i class="fa-solid fa-pen-to-square"></i> Edit
+                          </button>
+                          <button class="btn btn-secondary btn-sm" onclick="openTaskReport('${t.id}')" title="View Submissions & Reports">
+                            <i class="fa-solid fa-chart-pie"></i> Report
+                          </button>
+                          ${t.status === 'DRAFT' && hasPermission('tasks.publish') ? `
+                            <button class="btn btn-success btn-sm" onclick="publishTaskDirectly('${t.id}')">
+                              <i class="fa-solid fa-upload"></i> Publish
+                            </button>
+                          ` : ''}
+                        </div>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mobile Cards Feed View -->
+      <div class="tasks-mobile-view">
+        ${tasks.map(t => `
+          <div class="task-card">
+            <div class="task-card-top">
+              <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <span class="badge badge-not-started" style="font-size:0.7rem;">${t.task_type === 'RECURRING_INSTANCE' ? 'RECURRING' : t.task_type}</span>
+                ${getAdminStatusBadge(t)}
+              </div>
+              <button type="button" class="btn-badge-interactive" onclick="openTaskAssignedTeachersModal('${t.id}', '${escapeHtml(t.title).replace(/'/g, "\\'")}')" title="View assigned teachers">
+                <i class="fa-solid fa-users" style="font-size:0.75rem;"></i>
+                <span>${t.total_assigned || 0} assigned</span>
+              </button>
+            </div>
+
+            <div class="task-card-title-group">
+              <div class="task-card-title">${escapeHtml(t.title)}</div>
+              ${t.description ? `<div class="task-card-desc">${escapeHtml(t.description)}</div>` : ''}
+            </div>
+
+            <div class="task-card-chips">
+              <span class="task-chip chip-campus"><i class="fa-solid fa-building-columns"></i> ${escapeHtml(t.campus_names || 'All Campuses')}</span>
+              <span class="task-chip chip-deadline"><i class="fa-regular fa-clock"></i> Due: ${formatDateTime(t.deadline_at)}</span>
+              ${!t.allow_late_submissions ? `<span class="task-chip chip-urgent"><i class="fa-solid fa-lock"></i> Strict Deadline</span>` : ''}
+            </div>
+
+            <div class="task-card-progress">
+              <span style="font-size:0.78rem; color:var(--text-muted); font-weight:600;">Completion Rate:</span>
+              <div class="task-progress-bar">
+                <div class="task-progress-fill" style="width:${t.completion_rate || 0}%;"></div>
+              </div>
+              <strong style="font-size:0.82rem;">${t.completion_rate || 0}%</strong>
+            </div>
+
+            <div class="task-card-actions">
+              <button class="btn btn-primary btn-sm" onclick="openTaskEditor('${t.id}')">
+                <i class="fa-solid fa-pen-to-square"></i> Edit
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="openTaskReport('${t.id}')">
+                <i class="fa-solid fa-chart-pie"></i> Report
+              </button>
+              <select class="form-select form-select-sm" style="flex:1; min-width:100px; font-size:0.82rem;" onchange="changeTaskStatus('${t.id}', this.value)">
+                <option value="ACTIVE" ${t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED' ? 'selected' : ''}>Active</option>
+                <option value="PAUSED" ${t.raw_status === 'PAUSED' ? 'selected' : ''}>Paused</option>
+                <option value="ARCHIVED" ${t.raw_status === 'ARCHIVED' ? 'selected' : ''}>Archived</option>
+                ${t.raw_status === 'DRAFT' ? '<option value="DRAFT" selected>Draft</option>' : ''}
+              </select>
+              ${t.status === 'DRAFT' && hasPermission('tasks.publish') ? `
+                <button class="btn btn-success btn-sm btn-block" onclick="publishTaskDirectly('${t.id}')" style="margin-top:6px;">
+                  <i class="fa-solid fa-upload"></i> Publish Now
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `}
   `;
 }
 
@@ -2133,36 +2478,53 @@ async function renderTaskBuilder(container) {
   const tb = state.taskBuilder;
   const campuses = await api('/campuses');
 
+  const steps = [
+    { num: 1, label: 'Details' },
+    { num: 2, label: 'Form Builder' },
+    { num: 3, label: 'Campuses' },
+    { num: 4, label: 'Audience Rules' },
+    { num: 5, label: 'Recipients' },
+    { num: 6, label: 'Review' },
+    { num: 7, label: tb.editingTaskId ? 'Save' : 'Publish' }
+  ];
+  const currentStepObj = steps.find(s => s.num === tb.step) || steps[0];
+
   container.innerHTML = `
     <!-- Header title for Edit vs New -->
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-      <h2><i class="fa-solid ${tb.editingTaskId ? 'fa-pen-to-square' : 'fa-wand-magic-sparkles'}"></i> ${tb.editingTaskId ? 'Edit Assigned Task' : 'Guided Task Builder'}</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px;">
+      <div>
+        <h2 style="margin:0 0 4px 0;"><i class="fa-solid ${tb.editingTaskId ? 'fa-pen-to-square' : 'fa-wand-magic-sparkles'}"></i> ${tb.editingTaskId ? 'Edit Assigned Task' : 'Guided Task Builder'}</h2>
+        <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">
+          ${tb.editingTaskId ? 'Modify existing task configuration, audience rules, or questions.' : 'Configure task attributes, form fields, target audience, and dispatch assignments.'}
+        </p>
+      </div>
       <button class="btn btn-secondary btn-sm" onclick="state.taskBuilder = null; navigateTo('tasks');">
         <i class="fa-solid fa-arrow-left"></i> Back to Tasks
       </button>
     </div>
 
     <!-- Stepper Indicator -->
-    <div class="stepper-header">
-      ${[
-        { num: 1, label: 'Details' },
-        { num: 2, label: 'Form Builder' },
-        { num: 3, label: 'Campuses' },
-        { num: 4, label: 'Audience Rules' },
-        { num: 5, label: 'Recipient Preview' },
-        { num: 6, label: 'Review' },
-        { num: 7, label: tb.editingTaskId ? 'Save Changes' : 'Publish' }
-      ].map(s => `
-        <div class="step-item ${tb.step === s.num ? 'active' : (tb.step > s.num ? 'completed' : '')}">
-          <div class="step-circle">${tb.step > s.num ? '<i class="fa-solid fa-check"></i>' : s.num}</div>
-          <div class="step-label">${s.label}</div>
-        </div>
-      `).join('')}
+    <div class="stepper-container">
+      <div class="stepper-mobile-indicator">
+        <span style="font-weight:700; color:var(--primary); font-size:0.9rem;">
+          <i class="fa-solid fa-list-check"></i> Step ${tb.step} of 7: ${currentStepObj.label}
+        </span>
+        <span class="task-chip chip-campus">${Math.round((tb.step / 7) * 100)}% Complete</span>
+      </div>
+
+      <div class="stepper-bar">
+        ${steps.map(s => `
+          <div class="stepper-step-node ${tb.step === s.num ? 'active' : (tb.step > s.num ? 'completed' : '')}">
+            <div class="stepper-node-circle">${tb.step > s.num ? '<i class="fa-solid fa-check"></i>' : s.num}</div>
+            <div class="stepper-node-label">${s.label}</div>
+          </div>
+        `).join('')}
+      </div>
     </div>
 
     <!-- Step Container -->
-    <div class="card" style="max-width: 900px; margin: 0 auto;">
-      <div class="card-body">
+    <div class="card" style="max-width: 900px; margin: 0 auto; box-shadow:var(--shadow-md);">
+      <div class="card-body" style="padding: 26px 28px;">
         ${await renderTaskBuilderStepContent(tb, campuses)}
       </div>
     </div>
@@ -2173,32 +2535,37 @@ async function renderTaskBuilderStepContent(tb, campuses) {
   switch (tb.step) {
     case 1:
       return `
-        <h3>Step 1: Basic Task Details</h3>
-        <p style="color:var(--text-muted); margin-bottom: 20px;">Provide the title, start schedule, and deadline for the task.</p>
+        <div style="margin-bottom:20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
+          <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-file-lines text-primary" style="margin-right:6px;"></i> Step 1: Basic Task Details</h3>
+          <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Provide the task title, teacher instructions, schedule window, and submission policies.</p>
+        </div>
+
         <div class="form-group">
           <label>Task Title <span class="text-danger">*</span></label>
-          <input type="text" id="tb-title" class="form-input" value="${escapeHtml(tb.title)}" placeholder="e.g. Term 1 Syllabus Verification" />
+          <input type="text" id="tb-title" class="form-input" value="${escapeHtml(tb.title)}" placeholder="e.g. Term 1 Syllabus Coverage Report" required />
         </div>
+
         <div class="form-group">
           <label>Description & Teacher Instructions</label>
-          <textarea id="tb-desc" class="form-textarea" placeholder="Provide context and instructions for teachers...">${escapeHtml(tb.description)}</textarea>
+          <textarea id="tb-desc" class="form-textarea" placeholder="Provide clear guidelines and instructions for teachers...">${escapeHtml(tb.description)}</textarea>
         </div>
+
         <div class="form-group">
-          <label>Task Type & Repetition Schedule</label>
+          <label>Task Type & Schedule Mode</label>
           <select id="tb-type" class="form-select" onchange="state.taskBuilder.task_type = this.value; loadCurrentView();">
-            <option value="ONE_TIME" ${tb.task_type === 'ONE_TIME' ? 'selected' : ''}>One-Time Task</option>
+            <option value="ONE_TIME" ${tb.task_type === 'ONE_TIME' ? 'selected' : ''}>One-Time Task (Single assignment)</option>
             <option value="RECURRING_TEMPLATE" ${tb.task_type === 'RECURRING_TEMPLATE' ? 'selected' : ''}>Recurring Template (Auto-Repeating Task)</option>
           </select>
         </div>
 
         ${tb.task_type === 'RECURRING_TEMPLATE' ? `
-          <div style="background:var(--bg-surface); border:1px solid var(--primary); border-radius:var(--radius-md); padding:16px; margin-bottom:16px;">
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; color:var(--primary); font-weight:600;">
-              <i class="fa-solid fa-repeat"></i> Extensive Recurrence Configuration
+          <div style="background:var(--primary-light); border:1px solid var(--primary-border); border-radius:var(--radius-md); padding:18px; margin-bottom:20px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; color:var(--primary); font-weight:700;">
+              <i class="fa-solid fa-repeat"></i> Recurrence Schedule Configuration
             </div>
 
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-              <div class="form-group">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+              <div class="form-group" style="margin-bottom:0;">
                 <label>Repeat Frequency</label>
                 <select id="tb-rec-freq" class="form-select" onchange="state.taskBuilder.recurrence_config = state.taskBuilder.recurrence_config || {}; state.taskBuilder.recurrence_config.frequency = this.value; loadCurrentView();">
                   <option value="DAILY" ${tb.recurrence_config && tb.recurrence_config.frequency === 'DAILY' ? 'selected' : ''}>Daily (Every N Days)</option>
@@ -2211,14 +2578,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
                 </select>
               </div>
 
-              <div class="form-group">
+              <div class="form-group" style="margin-bottom:0;">
                 <label>Repeat Every (Interval)</label>
                 <input type="number" id="tb-rec-interval" class="form-input" min="1" max="365" value="${(tb.recurrence_config && tb.recurrence_config.interval) || 1}" />
               </div>
             </div>
 
             ${(!tb.recurrence_config || tb.recurrence_config.frequency === 'WEEKLY' || tb.recurrence_config.frequency === 'BIWEEKLY') ? `
-              <div class="form-group">
+              <div class="form-group" style="margin-top:14px; margin-bottom:0;">
                 <label>Repeat on Weekdays</label>
                 <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
                   ${[
@@ -2233,9 +2600,9 @@ async function renderTaskBuilderStepContent(tb, campuses) {
                     const activeDays = (tb.recurrence_config && tb.recurrence_config.weekdays) || [1];
                     const isChecked = activeDays.includes(day.val);
                     return `
-                      <label class="checkbox-label" style="background:var(--border-subtle); padding:6px 12px; border-radius:4px; cursor:pointer;">
+                      <label class="choice-tile" style="padding:6px 12px; font-size:0.82rem;">
                         <input type="checkbox" name="tb_weekdays" value="${day.val}" ${isChecked ? 'checked' : ''} />
-                        ${day.label}
+                        <span>${day.label}</span>
                       </label>
                     `;
                   }).join('')}
@@ -2244,7 +2611,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
             ` : ''}
 
             ${(tb.recurrence_config && (tb.recurrence_config.frequency === 'MONTHLY' || tb.recurrence_config.frequency === 'QUARTERLY')) ? `
-              <div class="form-group">
+              <div class="form-group" style="margin-top:14px; margin-bottom:0;">
                 <label>Day of Month</label>
                 <select id="tb-rec-day-of-month" class="form-select">
                   ${Array.from({length: 28}, (_, i) => i + 1).map(d => `
@@ -2255,14 +2622,13 @@ async function renderTaskBuilderStepContent(tb, campuses) {
               </div>
             ` : ''}
 
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-              <div class="form-group">
-                <label>Instance Deadline (Days from generation)</label>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px; margin-top:14px;">
+              <div class="form-group" style="margin-bottom:0;">
+                <label>Deadline (Days after generation)</label>
                 <input type="number" id="tb-rec-deadline-offset" class="form-input" min="1" max="90" value="${(tb.recurrence_config && tb.recurrence_config.deadline_offset_days) || 7}" />
-                <span style="font-size:0.75rem; color:var(--text-muted);">Each generated task instance will be due this many days after creation.</span>
               </div>
 
-              <div class="form-group">
+              <div class="form-group" style="margin-bottom:0;">
                 <label>Recurrence End Condition</label>
                 <select id="tb-rec-end-type" class="form-select" onchange="state.taskBuilder.recurrence_config = state.taskBuilder.recurrence_config || {}; state.taskBuilder.recurrence_config.end_type = this.value; loadCurrentView();">
                   <option value="NEVER" ${!tb.recurrence_config || tb.recurrence_config.end_type === 'NEVER' ? 'selected' : ''}>Never (Repeats indefinitely)</option>
@@ -2273,14 +2639,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
             </div>
 
             ${tb.recurrence_config && tb.recurrence_config.end_type === 'ON_DATE' ? `
-              <div class="form-group">
+              <div class="form-group" style="margin-top:14px; margin-bottom:0;">
                 <label>End Date</label>
                 <input type="date" id="tb-rec-end-date" class="form-input" value="${tb.recurrence_config.end_date || ''}" />
               </div>
             ` : ''}
 
             ${tb.recurrence_config && tb.recurrence_config.end_type === 'AFTER_OCCURRENCES' ? `
-              <div class="form-group">
+              <div class="form-group" style="margin-top:14px; margin-bottom:0;">
                 <label>Max Occurrences (e.g. 12)</label>
                 <input type="number" id="tb-rec-max-occurrences" class="form-input" min="1" max="500" value="${tb.recurrence_config.max_occurrences || 12}" />
               </div>
@@ -2288,7 +2654,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </div>
         ` : ''}
 
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
           <div class="form-group">
             <label>Start / Open Date & Time</label>
             <input type="datetime-local" id="tb-open-at" class="form-input" value="${tb.open_at}" onchange="handleTaskOpenDateChange(this.value)" />
@@ -2301,16 +2667,24 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </div>
         </div>
 
-        <div style="background:var(--border-subtle); padding:14px; border-radius:var(--radius-md); margin-bottom:16px;">
-          <label style="font-weight:600; margin-bottom:8px; display:block;"><i class="fa-solid fa-sliders"></i> Submission Policies</label>
-          <div style="display:flex; flex-direction:column; gap:8px;">
-            <label class="checkbox-label">
-              <input type="checkbox" id="tb-allow-late" ${tb.allow_late_submissions !== false ? 'checked' : ''} />
-              <span><strong>Allow Late Submissions:</strong> Teachers can submit responses after the deadline has passed.</span>
+        <div style="background:var(--border-subtle); padding:16px; border-radius:var(--radius-md); margin-bottom:18px;">
+          <label style="font-weight:700; margin-bottom:10px; display:block; color:var(--text-main); font-size:0.9rem;">
+            <i class="fa-solid fa-sliders" style="color:var(--primary); margin-right:4px;"></i> Submission Policies
+          </label>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <label class="choice-tile" style="align-items:flex-start;">
+              <input type="checkbox" id="tb-allow-late" ${tb.allow_late_submissions !== false ? 'checked' : ''} style="margin-top:3px;" />
+              <div>
+                <strong>Allow Late Submissions</strong>
+                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">Teachers can submit responses after the deadline has expired (marked as Late).</div>
+              </div>
             </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="tb-allow-edit" ${tb.allow_edit_submission === true ? 'checked' : ''} />
-              <span><strong>Allow Response Editing:</strong> Teachers can edit and resubmit their responses even after initial submission.</span>
+            <label class="choice-tile" style="align-items:flex-start;">
+              <input type="checkbox" id="tb-allow-edit" ${tb.allow_edit_submission === true ? 'checked' : ''} style="margin-top:3px;" />
+              <div>
+                <strong>Allow Response Editing</strong>
+                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">Teachers can edit and update their submitted response prior to task closure.</div>
+              </div>
             </label>
           </div>
         </div>
@@ -2327,58 +2701,72 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </div>
         ` : ''}
 
-        <div style="display:flex; justify-content:flex-end; margin-top:24px;">
+        <div style="display:flex; justify-content:flex-end; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
           <button class="btn btn-primary" onclick="saveTaskBuilderStep(1, 2)">Next: Form Builder <i class="fa-solid fa-arrow-right"></i></button>
         </div>
       `;
 
     case 2:
       return `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
-          <h3>Step 2: Response Form Questions</h3>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom: 20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
+          <div>
+            <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-rectangle-list text-primary" style="margin-right:6px;"></i> Step 2: Response Form Builder</h3>
+            <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Define questions and input fields required from teachers.</p>
+          </div>
           <button class="btn btn-secondary btn-sm" onclick="addTaskQuestion()"><i class="fa-solid fa-plus"></i> Add Question</button>
         </div>
+
         <div id="questions-list">
           ${tb.questions.map((q, idx) => `
-            <div class="question-block" id="q-block-${idx}">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
-                <strong>Question #${idx + 1}</strong>
-                <button type="button" class="btn-icon text-danger" onclick="removeTaskQuestion(${idx})"><i class="fa-solid fa-trash"></i></button>
+            <div class="question-card" id="q-block-${idx}">
+              <div class="question-card-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="question-index-badge">Q${idx + 1}</span>
+                  <span style="font-weight:700; color:var(--text-main); font-size:0.92rem;">Field Configuration</span>
+                </div>
+                <button type="button" class="btn-icon text-danger" onclick="removeTaskQuestion(${idx})" title="Delete Question"><i class="fa-solid fa-trash"></i></button>
               </div>
-              <div class="form-group">
-                <label>Question Label</label>
-                <input type="text" class="form-input q-label" value="${escapeHtml(q.label)}" placeholder="Enter question..." />
+
+              <div class="form-group" style="margin-bottom:12px;">
+                <label>Question Label / Prompt <span class="text-danger">*</span></label>
+                <input type="text" class="form-input q-label" value="${escapeHtml(q.label)}" placeholder="e.g. Enter total number of classes conducted..." />
               </div>
-              <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                <div class="form-group">
-                  <label>Type</label>
+
+              <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items:flex-end;">
+                <div class="form-group" style="margin-bottom:0;">
+                  <label>Field Input Type</label>
                   <select class="form-select q-type" onchange="updateQuestionType(${idx}, this.value)">
                     <option value="short_text" ${q.type === 'short_text' ? 'selected' : ''}>Short Text</option>
-                    <option value="long_text" ${q.type === 'long_text' ? 'selected' : ''}>Long Text</option>
-                    <option value="number" ${q.type === 'number' ? 'selected' : ''}>Number</option>
-                    <option value="date" ${q.type === 'date' ? 'selected' : ''}>Date</option>
-                    <option value="yes_no" ${q.type === 'yes_no' ? 'selected' : ''}>Yes / No</option>
-                    <option value="single_choice" ${q.type === 'single_choice' ? 'selected' : ''}>Single Choice</option>
-                    <option value="multiple_choice" ${q.type === 'multiple_choice' ? 'selected' : ''}>Multiple Choice</option>
-                    <option value="dropdown" ${q.type === 'dropdown' ? 'selected' : ''}>Dropdown</option>
+                    <option value="long_text" ${q.type === 'long_text' ? 'selected' : ''}>Long Text (Multi-line)</option>
+                    <option value="number" ${q.type === 'number' ? 'selected' : ''}>Numeric Input</option>
+                    <option value="date" ${q.type === 'date' ? 'selected' : ''}>Date Picker</option>
+                    <option value="yes_no" ${q.type === 'yes_no' ? 'selected' : ''}>Yes / No Choice</option>
+                    <option value="single_choice" ${q.type === 'single_choice' ? 'selected' : ''}>Single Choice (Radio)</option>
+                    <option value="multiple_choice" ${q.type === 'multiple_choice' ? 'selected' : ''}>Multiple Choice (Checkboxes)</option>
+                    <option value="dropdown" ${q.type === 'dropdown' ? 'selected' : ''}>Dropdown Select</option>
                   </select>
                 </div>
-                <div class="form-group" style="display:flex; align-items:flex-end;">
-                  <label class="checkbox-label" style="margin-bottom:12px;">
-                    <input type="checkbox" class="q-required" ${q.required ? 'checked' : ''} /> Mandatory Field
+
+                <div class="form-group" style="margin-bottom:0;">
+                  <label class="choice-tile" style="padding:9px 14px;">
+                    <input type="checkbox" class="q-required" ${q.required ? 'checked' : ''} />
+                    <span><strong>Mandatory</strong> (Required to submit)</span>
                   </label>
                 </div>
               </div>
+
               ${['single_choice', 'multiple_choice', 'dropdown'].includes(q.type) ? `
-                <div class="form-group">
-                  <label>Options (Comma separated)</label>
-                  <input type="text" class="form-input q-options" value="${(q.options || []).join(', ')}" placeholder="Option 1, Option 2, Option 3" />
+                <div class="form-group" style="margin-top:12px; margin-bottom:0;">
+                  <label>Options List (Comma separated)</label>
+                  <input type="text" class="form-input q-options" value="${(q.options || []).join(', ')}" placeholder="Option A, Option B, Option C" />
+                  <span style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">Separate each choice with a comma.</span>
                 </div>
               ` : ''}
             </div>
           `).join('')}
         </div>
-        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+
+        <div style="display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
           <button class="btn btn-secondary" onclick="state.taskBuilder.step = 1; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
           <button class="btn btn-primary" onclick="saveTaskBuilderQuestions()">Next: Campuses <i class="fa-solid fa-arrow-right"></i></button>
         </div>
@@ -2386,20 +2774,24 @@ async function renderTaskBuilderStepContent(tb, campuses) {
 
     case 3:
       return `
-        <h3>Step 3: Select Authorized Campuses</h3>
-        <p style="color:var(--text-muted); margin-bottom: 20px;">Choose which campuses this task applies to.</p>
-        <div style="display:flex; flex-direction:column; gap:10px;">
+        <div style="margin-bottom:20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
+          <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-building-columns text-primary" style="margin-right:6px;"></i> Step 3: Select Authorized Campuses</h3>
+          <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Select one or more campuses eligible for this task assignment.</p>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px;">
           ${campuses.map(c => `
-            <label class="checkbox-label" style="padding: 12px; background:var(--border-subtle); border-radius:var(--radius-md);">
+            <label class="choice-tile" style="padding: 14px 16px;">
               <input type="checkbox" name="tb_campuses" value="${c.id}" ${tb.campus_ids.includes(c.id) ? 'checked' : ''} />
               <div>
-                <strong>${escapeHtml(c.name)}</strong>
-                <span style="font-size:0.8rem; color:var(--text-muted); margin-left:8px;">(${c.code})</span>
+                <strong style="display:block; font-size:0.92rem; color:var(--text-main);">${escapeHtml(c.name)}</strong>
+                <span style="font-size:0.78rem; color:var(--text-muted); font-weight:600;">Code: ${c.code}</span>
               </div>
             </label>
           `).join('')}
         </div>
-        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+
+        <div style="display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
           <button class="btn btn-secondary" onclick="state.taskBuilder.step = 2; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
           <button class="btn btn-primary" onclick="saveTaskBuilderCampuses()">Next: Audience Rules <i class="fa-solid fa-arrow-right"></i></button>
         </div>
@@ -2418,79 +2810,82 @@ async function renderTaskBuilderStepContent(tb, campuses) {
       const currentOp = ar.operator || 'AND';
 
       return `
-        <h3>Step 4: Target Audience Rules</h3>
+        <div style="margin-bottom:20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
+          <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-filter text-primary" style="margin-right:6px;"></i> Step 4: Target Audience Rules</h3>
+          <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Filter teachers by Department, Designation, Subject, or Faculty Groups.</p>
+        </div>
         
-        <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:16px; margin: 16px 0 24px;">
-          <div style="font-weight:600; font-size:0.95rem; margin-bottom:6px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
-            <i class="fa-solid fa-code-fork" style="color:var(--primary);"></i> Audience Combination Operator
+        <div style="background:var(--bg-surface); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:16px 20px; margin-bottom:24px; box-shadow:var(--shadow-sm);">
+          <div style="font-weight:700; font-size:0.92rem; margin-bottom:4px; color:var(--text-main); display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-code-fork" style="color:var(--primary);"></i> Audience Combination Logic
           </div>
-          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:12px;">
-            If no filter options are checked below, <strong>all teachers</strong> from the selected campuses will be included. If multiple filter categories are checked, choose how they combine:
+          <p style="color:var(--text-muted); font-size:0.84rem; margin-bottom:12px;">
+            If no categories are selected below, <strong>all teachers</strong> from the selected campuses are assigned. When multiple filter dimensions are selected:
           </p>
-          <div style="display:flex; flex-wrap:wrap; gap:20px; align-items:center;">
-            <label class="radio-label" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-weight:500;">
+          <div style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
+            <label class="choice-tile" style="flex:1; min-width:200px;">
               <input type="radio" name="tb_operator" value="AND" ${currentOp === 'AND' ? 'checked' : ''} />
-              <span><strong>AND Logic</strong> (Recipient must match <em>ALL</em> selected active categories)</span>
+              <span><strong>AND Logic</strong> (Must match ALL active categories)</span>
             </label>
-            <label class="radio-label" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-weight:500;">
+            <label class="choice-tile" style="flex:1; min-width:200px;">
               <input type="radio" name="tb_operator" value="OR" ${currentOp === 'OR' ? 'checked' : ''} />
-              <span><strong>OR Logic</strong> (Recipient matches if they satisfy <em>ANY</em> selected category)</span>
+              <span><strong>OR Logic</strong> (Matches if in ANY category)</span>
             </label>
           </div>
         </div>
 
         <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <label style="margin:0;">Departments</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-sitemap" style="color:var(--primary); margin-right:4px;"></i> Departments</label>
             <div style="font-size:0.8rem;">
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_depts', true)">Select All</button>
               <span style="color:var(--text-muted);">|</span>
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_depts', false)">Clear</button>
             </div>
           </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
             ${depts.map(d => `
-              <label class="checkbox-label">
+              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
                 <input type="checkbox" name="tb_depts" value="${d.id}" ${(ar.departments || []).includes(d.id) ? 'checked' : ''} />
-                ${escapeHtml(d.name)}
+                <span>${escapeHtml(d.name)}</span>
               </label>
             `).join('')}
           </div>
         </div>
 
         <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <label style="margin:0;">Designations</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-user-tag" style="color:var(--primary); margin-right:4px;"></i> Designations</label>
             <div style="font-size:0.8rem;">
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_desigs', true)">Select All</button>
               <span style="color:var(--text-muted);">|</span>
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_desigs', false)">Clear</button>
             </div>
           </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
             ${desigs.map(d => `
-              <label class="checkbox-label">
+              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
                 <input type="checkbox" name="tb_desigs" value="${d.id}" ${(ar.designations || []).includes(d.id) ? 'checked' : ''} />
-                ${escapeHtml(d.name)}
+                <span>${escapeHtml(d.name)}</span>
               </label>
             `).join('')}
           </div>
         </div>
 
         <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <label style="margin:0;">Subjects</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-book" style="color:var(--primary); margin-right:4px;"></i> Subjects</label>
             <div style="font-size:0.8rem;">
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_subjs', true)">Select All</button>
               <span style="color:var(--text-muted);">|</span>
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_subjs', false)">Clear</button>
             </div>
           </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
             ${subjs.map(s => `
-              <label class="checkbox-label">
+              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
                 <input type="checkbox" name="tb_subjs" value="${s.id}" ${(ar.subjects || []).includes(s.id) ? 'checked' : ''} />
-                ${escapeHtml(s.name)}
+                <span>${escapeHtml(s.name)}</span>
               </label>
             `).join('')}
           </div>
@@ -2498,19 +2893,19 @@ async function renderTaskBuilderStepContent(tb, campuses) {
 
         ${cats && cats.length > 0 ? `
           <div class="form-group">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-              <label style="margin:0;">Categories</label>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <label style="margin:0; font-weight:700;"><i class="fa-solid fa-tags" style="color:var(--primary); margin-right:4px;"></i> Categories</label>
               <div style="font-size:0.8rem;">
                 <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_cats', true)">Select All</button>
                 <span style="color:var(--text-muted);">|</span>
                 <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_cats', false)">Clear</button>
               </div>
             </div>
-            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
               ${cats.map(c => `
-                <label class="checkbox-label">
+                <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
                   <input type="checkbox" name="tb_cats" value="${c.id}" ${(ar.categories || []).includes(c.id) ? 'checked' : ''} />
-                  ${escapeHtml(c.name)}
+                  <span>${escapeHtml(c.name)}</span>
                 </label>
               `).join('')}
             </div>
@@ -2518,26 +2913,26 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         ` : ''}
 
         <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <label style="margin:0;">Faculty Groups</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-users-rectangle" style="color:var(--primary); margin-right:4px;"></i> Faculty Groups</label>
             <div style="font-size:0.8rem;">
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_groups', true)">Select All</button>
               <span style="color:var(--text-muted);">|</span>
               <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_groups', false)">Clear</button>
             </div>
           </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:6px;">
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
             ${groups.map(g => `
-              <label class="checkbox-label">
+              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
                 <input type="checkbox" name="tb_groups" value="${g.id}" ${(ar.groups || []).includes(g.id) ? 'checked' : ''} />
-                ${escapeHtml(g.name)}
+                <span>${escapeHtml(g.name)}</span>
               </label>
             `).join('')}
           </div>
         </div>
 
         <div class="form-group">
-          <label>Class Teacher Status</label>
+          <label style="font-weight:700;"><i class="fa-solid fa-chalkboard-user" style="color:var(--primary); margin-right:4px;"></i> Class Teacher Role Constraint</label>
           <select id="tb-class-teacher" class="form-select">
             <option value="">All Teachers (Ignore Class Teacher Status)</option>
             <option value="true" ${ar.class_teacher_status === true ? 'selected' : ''}>Class Teachers Only</option>
@@ -2545,7 +2940,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </select>
         </div>
 
-        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+        <div style="display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
           <button class="btn btn-secondary" onclick="state.taskBuilder.step = 3; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
           <button class="btn btn-primary" onclick="saveTaskBuilderAudience()">Next: Recipient Preview <i class="fa-solid fa-arrow-right"></i></button>
         </div>
@@ -2567,26 +2962,26 @@ async function renderTaskBuilderStepContent(tb, campuses) {
       const isIndeterminate = activeCountStep5 > 0 && activeCountStep5 < totalRecipients;
 
       return `
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom: 16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom: 16px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
           <div>
-            <h3 style="margin:0 0 6px 0;">Step 5: Dynamic Recipient Preview</h3>
-            <span id="recipient-selection-badge" class="badge badge-in-progress">${activeCountStep5} of ${totalRecipients} Teachers Selected</span>
+            <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-user-check text-primary" style="margin-right:6px;"></i> Step 5: Recipient Preview</h3>
+            <span id="recipient-selection-badge" class="badge badge-active">${activeCountStep5} of ${totalRecipients} Teachers Selected</span>
           </div>
           <div style="display:flex; gap:8px;">
-            <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllRecipients(true)" style="display:inline-flex; align-items:center; gap:6px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllRecipients(true)">
               <i class="fa-solid fa-check-double"></i> Select All
             </button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllRecipients(false)" style="display:inline-flex; align-items:center; gap:6px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllRecipients(false)">
               <i class="fa-solid fa-square-xmark"></i> Deselect All
             </button>
           </div>
         </div>
         <p style="color:var(--text-muted); font-size:0.88rem; margin-bottom: 16px;">
-          All matching teachers are selected by default. Use the master checkbox or click individual checkboxes to include or exclude teachers from this task.
+          Matching teachers are selected by default. Use checkboxes to exclude individuals if necessary.
         </p>
 
-        <div class="table-responsive" style="max-height: 350px; overflow-y: auto;">
-          <table class="table">
+        <div class="table-responsive" style="max-height: 380px; overflow-y: auto; border:1px solid var(--border-color); border-radius:var(--radius-md);">
+          <table class="table" style="margin-bottom:0;">
             <thead>
               <tr>
                 <th style="width: 44px; text-align:center;">
@@ -2599,7 +2994,14 @@ async function renderTaskBuilderStepContent(tb, campuses) {
               </tr>
             </thead>
             <tbody>
-              ${tb.previewRecipients.map(r => {
+              ${tb.previewRecipients.length === 0 ? `
+                <tr>
+                  <td colspan="5" class="empty-state" style="padding:24px;">
+                    <i class="fa-solid fa-user-slash"></i>
+                    <p>No teachers matched the selected campus and audience filters.</p>
+                  </td>
+                </tr>
+              ` : tb.previewRecipients.map(r => {
                 const isExcluded = tb.recipient_exclusions.includes(r.id);
                 return `
                 <tr>
@@ -2608,7 +3010,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
                   </td>
                   <td><strong>${escapeHtml(r.display_name)}</strong></td>
                   <td>${escapeHtml(r.email)}</td>
-                  <td>${escapeHtml(r.campus_name)}</td>
+                  <td><span class="task-chip chip-campus">${escapeHtml(r.campus_name)}</span></td>
                   <td>${r.class_teacher_status ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-not-started">No</span>'}</td>
                 </tr>
               `;
@@ -2617,7 +3019,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </table>
         </div>
 
-        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+        <div style="display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
           <button class="btn btn-secondary" onclick="state.taskBuilder.step = 4; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
           <button class="btn btn-primary" onclick="state.taskBuilder.step = 6; loadCurrentView();">Next: Review <i class="fa-solid fa-arrow-right"></i></button>
         </div>
@@ -2641,20 +3043,57 @@ async function renderTaskBuilderStepContent(tb, campuses) {
       }
 
       return `
-        <h3>Step 6: Review Task Configuration</h3>
-        <div style="background:var(--border-subtle); padding: 16px; border-radius:var(--radius-md); margin: 20px 0; display:flex; flex-direction:column; gap:10px;">
-          <div><strong>Title:</strong> ${escapeHtml(tb.title)}</div>
-          <div><strong>Task Type:</strong> ${tb.task_type === 'RECURRING_TEMPLATE' ? '<span class="badge badge-active"><i class="fa-solid fa-repeat"></i> Recurring Template</span>' : '<span class="badge badge-not-started">One-Time Task</span>'}</div>
-          ${tb.task_type === 'RECURRING_TEMPLATE' ? `<div><strong>Recurrence Schedule:</strong> ${escapeHtml(recurrenceSummary)}</div>` : ''}
-          <div><strong>Start / Open Date:</strong> ${formatDateTime(tb.open_at)}</div>
-          <div><strong>Deadline:</strong> ${formatDateTime(tb.deadline_at)}</div>
-          <div><strong>Late Submissions Allowed:</strong> ${tb.allow_late_submissions !== false ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</div>
-          <div><strong>Response Editing Allowed:</strong> ${tb.allow_edit_submission === true ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</div>
-          <div><strong>Questions:</strong> ${tb.questions.length} Fields Configured</div>
-          <div><strong>Campuses:</strong> ${tb.campus_ids.length} Campuses Selected</div>
-          <div><strong>Final Recipient Count:</strong> <strong class="text-primary">${activeCount} Teachers</strong></div>
+        <div style="margin-bottom:20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
+          <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-clipboard-check text-primary" style="margin-right:6px;"></i> Step 6: Review Task Configuration</h3>
+          <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Please review all settings prior to committing changes.</p>
         </div>
-        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+
+        <div style="background:var(--border-subtle); padding: 18px 22px; border-radius:var(--radius-lg); margin: 20px 0; display:flex; flex-direction:column; gap:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Task Title</span>
+            <strong style="font-size:1.05rem; color:var(--text-main);">${escapeHtml(tb.title)}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Assignment Type</span>
+            <span>${tb.task_type === 'RECURRING_TEMPLATE' ? '<span class="badge badge-active"><i class="fa-solid fa-repeat"></i> Recurring Template</span>' : '<span class="badge badge-not-started">One-Time Task</span>'}</span>
+          </div>
+          ${tb.task_type === 'RECURRING_TEMPLATE' ? `
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+              <span style="font-weight:700; color:var(--text-muted);">Recurrence Schedule</span>
+              <strong style="color:var(--primary);">${escapeHtml(recurrenceSummary)}</strong>
+            </div>
+          ` : ''}
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Start / Open Window</span>
+            <strong>${formatDateTime(tb.open_at)}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Submission Deadline</span>
+            <strong style="color:var(--danger);">${formatDateTime(tb.deadline_at)}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Late Submissions Policy</span>
+            <span>${tb.allow_late_submissions !== false ? '<span class="task-chip" style="background:var(--success-bg); color:var(--success-text);">Allowed</span>' : '<span class="task-chip chip-urgent">Strict / Disabled</span>'}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Response Editing</span>
+            <span>${tb.allow_edit_submission === true ? '<span class="task-chip" style="background:var(--success-bg); color:var(--success-text);">Enabled</span>' : '<span class="task-chip" style="background:var(--slate-badge-bg); color:var(--slate-badge-text);">Locked upon submit</span>'}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Form Fields Configured</span>
+            <strong style="color:var(--text-main);">${tb.questions.length} Questions</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+            <span style="font-weight:700; color:var(--text-muted);">Authorized Campuses</span>
+            <strong style="color:var(--text-main);">${tb.campus_ids.length} Campuses</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; padding-top:4px;">
+            <span style="font-weight:700; color:var(--text-muted);">Final Recipient Count</span>
+            <strong style="font-size:1.15rem; color:var(--primary);">${activeCount} Teachers Selected</strong>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
           <button class="btn btn-secondary" onclick="state.taskBuilder.step = 5; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
           <button class="btn btn-primary" onclick="state.taskBuilder.step = 7; loadCurrentView();">Proceed to ${tb.editingTaskId ? 'Save Changes' : 'Publish'} <i class="fa-solid fa-arrow-right"></i></button>
         </div>
@@ -2662,15 +3101,20 @@ async function renderTaskBuilderStepContent(tb, campuses) {
 
     case 7:
       return `
-        <div style="text-align:center; padding: 24px 0;">
-          <div class="brand-badge" style="background:linear-gradient(135deg, var(--success), #059669);"><i class="fa-solid ${tb.editingTaskId ? 'fa-floppy-disk' : 'fa-rocket'}"></i></div>
-          <h3>${tb.editingTaskId ? 'Save Task Modifications' : 'Ready to Publish Task'}</h3>
-          <p style="color:var(--text-muted); max-width: 500px; margin: 12px auto 24px;">
-            ${tb.editingTaskId ? 'Saving will update task questions, audience rules, submission flags, and assign newly matching teachers.' : 'Publishing will recalculate eligible recipients on the server, freeze immutable assignments, and dispatch assignment notification emails to teachers.'}
+        <div style="text-align:center; padding: 32px 16px;">
+          <div class="brand-badge" style="background:linear-gradient(135deg, var(--primary), #2e7d56); width:64px; height:64px; font-size:2rem; margin-bottom:16px;">
+            <i class="fa-solid ${tb.editingTaskId ? 'fa-floppy-disk' : 'fa-rocket'}"></i>
+          </div>
+          <h3 style="font-size:1.4rem; margin-bottom:8px;">${tb.editingTaskId ? 'Save Task Modifications' : 'Ready to Publish Institutional Task'}</h3>
+          <p style="color:var(--text-muted); max-width: 520px; margin: 0 auto 28px; line-height:1.5;">
+            ${tb.editingTaskId ? 'Saving will update task questions, audience rules, submission policies, and assign any newly matching teachers.' : 'Publishing calculates eligible recipients on the server, freezes historical task assignments, and dispatches assignment notifications.'}
           </p>
 
-          <div style="display:flex; justify-content:center; gap: 16px;">
+          <div style="display:flex; justify-content:center; gap: 14px; flex-wrap:wrap;">
             ${tb.editingTaskId ? `
+              <button class="btn btn-secondary" onclick="state.taskBuilder.step = 6; loadCurrentView();">
+                <i class="fa-solid fa-arrow-left"></i> Review Again
+              </button>
               <button class="btn btn-primary" onclick="commitUpdateTask()">
                 <i class="fa-solid fa-floppy-disk"></i> Save & Update Task
               </button>
@@ -5743,27 +6187,75 @@ async function renderRecurringTasks(container) {
             <p>Set up recurring templates to automate daily, weekly, monthly, or yearly task generation.</p>
           </div>
         ` : `
-          <div class="table-responsive">
-            <table class="table">
+          <!-- Desktop Table View -->
+          <div class="table-responsive tasks-desktop-view">
+            <table class="table" style="margin-bottom:0;">
               <thead>
                 <tr>
                   <th>Template Title</th>
                   <th>Recurrence Schedule</th>
                   <th>Next Generation</th>
                   <th>Status</th>
+                  <th style="text-align:right;">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${recurringTemplates.map(t => `
-                  <tr>
-                    <td><strong>${escapeHtml(t.title)}</strong></td>
-                    <td>Monthly Recurrence (Auto-Audience Recalculation)</td>
-                    <td>${t.next_generation_at ? formatDateTime(t.next_generation_at) : 'Calculated on schedule'}</td>
-                    <td><span class="badge badge-active">${t.recurrence_status || 'ACTIVE'}</span></td>
-                  </tr>
-                `).join('')}
+                ${recurringTemplates.map(t => {
+                  let rcSummary = 'Recurring Schedule';
+                  if (t.recurrence_config) {
+                    const rc = typeof t.recurrence_config === 'string' ? JSON.parse(t.recurrence_config) : t.recurrence_config;
+                    rcSummary = `${rc.frequency || 'MONTHLY'} (Every ${rc.interval || 1} ${(rc.frequency || 'month').toLowerCase()})`;
+                  }
+                  return `
+                    <tr>
+                      <td>
+                        <strong>${escapeHtml(t.title)}</strong>
+                        ${t.description ? `<p style="font-size:0.8rem; color:var(--text-muted); margin-top:3px; max-width:400px;">${escapeHtml(t.description)}</p>` : ''}
+                      </td>
+                      <td><span class="task-chip"><i class="fa-solid fa-repeat"></i> ${escapeHtml(rcSummary)}</span></td>
+                      <td>${t.next_generation_at ? formatDateTime(t.next_generation_at) : '<span style="color:var(--text-muted);">Calculated on schedule</span>'}</td>
+                      <td><span class="badge badge-active">${t.recurrence_status || 'ACTIVE'}</span></td>
+                      <td style="text-align:right;">
+                        <button class="btn btn-primary btn-sm" onclick="openTaskEditor('${t.id}')">
+                          <i class="fa-solid fa-pen-to-square"></i> Edit Template
+                        </button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
+          </div>
+
+          <!-- Mobile Cards Feed View -->
+          <div class="tasks-mobile-view">
+            ${recurringTemplates.map(t => {
+              let rcSummary = 'Recurring Schedule';
+              if (t.recurrence_config) {
+                const rc = typeof t.recurrence_config === 'string' ? JSON.parse(t.recurrence_config) : t.recurrence_config;
+                rcSummary = `${rc.frequency || 'MONTHLY'} (Every ${rc.interval || 1} ${(rc.frequency || 'month').toLowerCase()})`;
+              }
+              return `
+                <div class="task-card">
+                  <div class="task-card-top">
+                    <span class="badge badge-active">${t.recurrence_status || 'ACTIVE'}</span>
+                    <span class="task-chip"><i class="fa-solid fa-repeat"></i> ${escapeHtml(rcSummary)}</span>
+                  </div>
+                  <div class="task-card-title-group">
+                    <div class="task-card-title">${escapeHtml(t.title)}</div>
+                    ${t.description ? `<div class="task-card-desc">${escapeHtml(t.description)}</div>` : ''}
+                  </div>
+                  <div class="task-card-chips">
+                    <span class="task-chip chip-deadline"><i class="fa-regular fa-clock"></i> Next: ${t.next_generation_at ? formatDateTime(t.next_generation_at) : 'On schedule'}</span>
+                  </div>
+                  <div class="task-card-actions">
+                    <button class="btn btn-primary btn-sm btn-block" onclick="openTaskEditor('${t.id}')">
+                      <i class="fa-solid fa-pen-to-square"></i> Edit Template
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
           </div>
         `}
       </div>
