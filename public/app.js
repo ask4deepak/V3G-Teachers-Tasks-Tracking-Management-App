@@ -932,7 +932,6 @@ async function renderTeacherTasks(container) {
                       <div style="font-weight:700; color:var(--text-main); font-size:0.95rem; margin-bottom:3px;">
                         ${escapeHtml(t.title)}
                       </div>
-                      ${t.description ? `<div style="font-size:0.82rem; color:var(--text-muted); line-height:1.35; max-width:480px;">${escapeHtml(t.description)}</div>` : ''}
                       ${t.draft_flag ? `<div style="margin-top:4px;"><span class="badge badge-draft" style="font-size:0.7rem;"><i class="fa-regular fa-floppy-disk"></i> Draft Saved</span></div>` : ''}
                     </td>
                     <td>
@@ -974,8 +973,6 @@ async function renderTeacherTasks(container) {
                 </div>
                 ${getStatusBadge(t)}
               </div>
-
-              ${t.description ? `<div class="task-card-desc">${escapeHtml(t.description)}</div>` : ''}
 
               <div class="task-card-chips">
                 ${getUrgencyBadge(t)}
@@ -1685,15 +1682,83 @@ async function renderAdminDashboard(container) {
     : allTasks;
 
   const teachers = (activeCampusId && activeCampusId !== 'ALL')
-    ? allTeachers.filter(u => (u.campuses || []).some(c => c.id === activeCampusId))
+    ? allTeachers.filter(u => u.campus_id === activeCampusId || (u.campuses || []).some(c => c.id === activeCampusId))
     : allTeachers;
 
-  const activeTasks = tasks.filter(t => t.status === 'PUBLISHED');
-  const totalOverdue = activeTasks.reduce((acc, t) => acc + (t.overdue || 0), 0);
-  const totalAssigned = activeTasks.reduce((acc, t) => acc + (t.total_assigned || 0), 0);
-  const totalSubmitted = activeTasks.reduce((acc, t) => acc + (t.submitted_on_time || 0) + (t.submitted_late || 0), 0);
+  const activeTasks = tasks.filter(t => t.status === 'ACTIVE' || t.status === 'PUBLISHED' || t.raw_status === 'ACTIVE' || t.raw_status === 'PUBLISHED');
+  const totalOverdue = activeTasks.reduce((acc, t) => acc + (parseInt(t.overdue, 10) || 0), 0);
+  const totalAssigned = activeTasks.reduce((acc, t) => acc + (parseInt(t.total_assigned, 10) || 0), 0);
+  const totalSubmitted = activeTasks.reduce((acc, t) => acc + (parseInt(t.submitted_on_time, 10) || 0) + (parseInt(t.submitted_late, 10) || 0), 0);
   const firstName = (state.user ? state.user.first_name : '') || 'Administrator';
   const todayDateString = new Date().toISOString().split('T')[0];
+
+  // Compute Teacher Distribution Breakdowns
+  const deptMap = {};
+  const desigMap = {};
+  const catMap = {};
+  const subjMap = {};
+  const grpMap = {};
+  const classTeachers = [];
+  const nonClassTeachers = [];
+
+  teachers.forEach(u => {
+    // Class teacher
+    const isCt = u.class_teacher_status === true || u.class_teacher_status === 'Yes' || u.class_teacher_status === 'true';
+    if (isCt) classTeachers.push(u);
+    else nonClassTeachers.push(u);
+
+    // Departments
+    if (u.department_names) {
+      u.department_names.split(',').map(s => s.trim()).filter(Boolean).forEach(d => {
+        deptMap[d] = deptMap[d] || [];
+        deptMap[d].push(u);
+      });
+    }
+
+    // Designations
+    if (u.designation_name) {
+      u.designation_name.split(',').map(s => s.trim()).filter(Boolean).forEach(d => {
+        desigMap[d] = desigMap[d] || [];
+        desigMap[d].push(u);
+      });
+    }
+
+    // Categories
+    if (u.category_names) {
+      u.category_names.split(',').map(s => s.trim()).filter(Boolean).forEach(c => {
+        catMap[c] = catMap[c] || [];
+        catMap[c].push(u);
+      });
+    }
+
+    // Subjects
+    if (u.subject_names) {
+      u.subject_names.split(',').map(s => s.trim()).filter(Boolean).forEach(s => {
+        subjMap[s] = subjMap[s] || [];
+        subjMap[s].push(u);
+      });
+    }
+
+    // Groups
+    if (u.group_names) {
+      u.group_names.split(',').map(g => g.trim()).filter(Boolean).forEach(g => {
+        grpMap[g] = grpMap[g] || [];
+        grpMap[g].push(u);
+      });
+    }
+  });
+
+  // Store transient dataset for drilldown clicks
+  window.__dashboardTeacherData = {
+    all: teachers,
+    departments: deptMap,
+    designations: desigMap,
+    categories: catMap,
+    subjects: subjMap,
+    groups: grpMap,
+    classTeachers,
+    nonClassTeachers
+  };
 
   container.innerHTML = `
     <!-- Control Room Hero Header -->
@@ -1731,31 +1796,155 @@ async function renderAdminDashboard(container) {
       <div class="live-banner-date hide-sm">${todayDateString}</div>
     </div>
 
-    <!-- RouteReady Metric KPI Grid -->
+    <!-- Metric KPI Grid (All clickable) -->
     <div class="kpi-grid">
-      <div class="kpi-card" onclick="navigateTo('tasks')">
+      <div class="kpi-card" onclick="navigateTo('tasks')" title="Click to view all tasks" style="cursor:pointer;">
         <div class="kpi-title">Active task operations</div>
         <div class="kpi-value">${activeTasks.length}/${tasks.length}</div>
         <div class="kpi-subtext">Active institutional workflows</div>
       </div>
-      <div class="kpi-card" onclick="navigateTo('users')">
+      <div class="kpi-card" onclick="navigateTo('reports-task-wise')" title="Click to view submissions report" style="cursor:pointer;">
         <div class="kpi-title">Faculty submissions</div>
         <div class="kpi-value">${totalSubmitted}/${totalAssigned || 0}</div>
         <div class="kpi-subtext">Across active teachers</div>
       </div>
-      <div class="kpi-card ${totalOverdue > 0 ? 'kpi-card-highlight' : ''}" onclick="navigateTo('reports-task-wise')">
+      <div class="kpi-card ${totalOverdue > 0 ? 'kpi-card-highlight' : ''}" onclick="navigateTo('reports-task-wise')" title="Click to view overdue tasks" style="cursor:pointer;">
         <div class="kpi-title">Overdue / Exceptions</div>
         <div class="kpi-value">${totalOverdue}</div>
         <div class="kpi-subtext">${totalOverdue > 0 ? 'Action items require follow-up' : 'Zero exceptions recorded'}</div>
       </div>
-      <div class="kpi-card" onclick="navigateTo('group-requests')">
+      <div class="kpi-card" onclick="navigateTo('group-requests')" title="Click to review group requests" style="cursor:pointer;">
         <div class="kpi-title">Pending group requests</div>
         <div class="kpi-value">${requests.count}</div>
         <div class="kpi-subtext">Faculty awaiting approval</div>
       </div>
     </div>
 
-    <!-- Dual Workspace Columns (matching screenshot layout) -->
+    <!-- Comprehensive Faculty Distribution & Summary Breakdown Card -->
+    <div class="dashboard-breakdown-card">
+      <div class="dashboard-breakdown-header">
+        <div>
+          <div class="dashboard-breakdown-title">
+            <i class="fa-solid fa-users text-primary"></i> Faculty Demographics & Breakdown
+          </div>
+          <span style="font-size:0.84rem; color:var(--text-muted);">
+            Active Campus Scope: <strong>${escapeHtml(getCampusNameForId(state.selectedCampusId))}</strong> • Click any group to view teacher list
+          </span>
+        </div>
+        <div>
+          <button class="breakdown-chip breakdown-chip-highlight" onclick="openTeacherListBreakdownModal('All Campus Faculty Members', 'all')" title="View complete teacher directory for active campus">
+            <i class="fa-solid fa-graduation-cap"></i> Total Teachers
+            <span class="breakdown-chip-count">${teachers.length}</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="dashboard-breakdown-grid">
+        <!-- Class Teacher Role Status -->
+        <div class="breakdown-group-card">
+          <div class="breakdown-group-title">
+            <i class="fa-solid fa-chalkboard-user text-primary"></i> Class Teacher Status
+          </div>
+          <div class="breakdown-chips-wrap">
+            <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Class Teachers', 'classTeachers')">
+              <span>Class Teachers</span>
+              <span class="breakdown-chip-count">${classTeachers.length}</span>
+            </button>
+            <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Non-Class Teachers', 'nonClassTeachers')">
+              <span>Non-Class Teachers</span>
+              <span class="breakdown-chip-count">${nonClassTeachers.length}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Department-wise Breakdown -->
+        <div class="breakdown-group-card">
+          <div class="breakdown-group-title">
+            <i class="fa-solid fa-sitemap text-primary"></i> Department-Wise
+          </div>
+          <div class="breakdown-chips-wrap">
+            ${Object.keys(deptMap).length === 0 ? `
+              <span style="font-size:0.8rem; color:var(--text-muted);">No department tags assigned</span>
+            ` : Object.keys(deptMap).sort().map(d => `
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Department: ${escapeHtml(d).replace(/'/g, "\\'")}', 'departments', '${escapeHtml(d).replace(/'/g, "\\'")}')">
+                <span>${escapeHtml(d)}</span>
+                <span class="breakdown-chip-count">${deptMap[d].length}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Designation-wise Breakdown -->
+        <div class="breakdown-group-card">
+          <div class="breakdown-group-title">
+            <i class="fa-solid fa-user-tag text-primary"></i> Designation-Wise
+          </div>
+          <div class="breakdown-chips-wrap">
+            ${Object.keys(desigMap).length === 0 ? `
+              <span style="font-size:0.8rem; color:var(--text-muted);">No designation tags assigned</span>
+            ` : Object.keys(desigMap).sort().map(d => `
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Designation: ${escapeHtml(d).replace(/'/g, "\\'")}', 'designations', '${escapeHtml(d).replace(/'/g, "\\'")}')">
+                <span>${escapeHtml(d)}</span>
+                <span class="breakdown-chip-count">${desigMap[d].length}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Category-wise Breakdown -->
+        <div class="breakdown-group-card">
+          <div class="breakdown-group-title">
+            <i class="fa-solid fa-tags text-primary"></i> Category-Wise
+          </div>
+          <div class="breakdown-chips-wrap">
+            ${Object.keys(catMap).length === 0 ? `
+              <span style="font-size:0.8rem; color:var(--text-muted);">No category tags assigned</span>
+            ` : Object.keys(catMap).sort().map(c => `
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Category: ${escapeHtml(c).replace(/'/g, "\\'")}', 'categories', '${escapeHtml(c).replace(/'/g, "\\'")}')">
+                <span>${escapeHtml(c)}</span>
+                <span class="breakdown-chip-count">${catMap[c].length}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Subject-wise Breakdown -->
+        <div class="breakdown-group-card">
+          <div class="breakdown-group-title">
+            <i class="fa-solid fa-book text-primary"></i> Subject-Wise
+          </div>
+          <div class="breakdown-chips-wrap">
+            ${Object.keys(subjMap).length === 0 ? `
+              <span style="font-size:0.8rem; color:var(--text-muted);">No subject tags assigned</span>
+            ` : Object.keys(subjMap).sort().map(s => `
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Subject: ${escapeHtml(s).replace(/'/g, "\\'")}', 'subjects', '${escapeHtml(s).replace(/'/g, "\\'")}')">
+                <span>${escapeHtml(s)}</span>
+                <span class="breakdown-chip-count">${subjMap[s].length}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Active Groups-wise Breakdown -->
+        <div class="breakdown-group-card">
+          <div class="breakdown-group-title">
+            <i class="fa-solid fa-users-rectangle text-primary"></i> Active Faculty Groups
+          </div>
+          <div class="breakdown-chips-wrap">
+            ${Object.keys(grpMap).length === 0 ? `
+              <span style="font-size:0.8rem; color:var(--text-muted);">No active group rosters</span>
+            ` : Object.keys(grpMap).sort().map(g => `
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Group: ${escapeHtml(g).replace(/'/g, "\\'")}', 'groups', '${escapeHtml(g).replace(/'/g, "\\'")}')">
+                <span>${escapeHtml(g)}</span>
+                <span class="breakdown-chip-count">${grpMap[g].length}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dual Workspace Columns -->
     <div class="grid-split-2">
       <!-- Left Column: Active Institutional Tasks -->
       <div class="card">
@@ -1797,7 +1986,7 @@ async function renderAdminDashboard(container) {
       <!-- Right Column: Institutional Directory & Workflows -->
       <div class="card">
         <div class="card-header">
-          <h2>Active faculty</h2>
+          <h2>Campus Directory</h2>
           <a href="javascript:void(0)" class="card-header-link" onclick="navigateTo('users')">Open directory →</a>
         </div>
         <div class="card-body">
@@ -1805,21 +1994,21 @@ async function renderAdminDashboard(container) {
             <div class="empty-state">
               <i class="fa-solid fa-users"></i>
               <h3>No teachers found</h3>
-              <p>No faculty members listed in the directory.</p>
+              <p>No faculty members listed in the directory for this campus.</p>
             </div>
           ` : `
             <div class="list-card-stack">
               ${teachers.slice(0, 6).map(u => `
-                <div class="list-card-item">
+                <div class="list-card-item" onclick="openTeacherListBreakdownModal('${escapeHtml(u.display_name).replace(/'/g, "\\'")}', 'single', '${u.id}')" style="cursor:pointer;">
                   <div class="list-card-left">
                     <div class="list-card-icon green"><i class="fa-solid fa-chalkboard-user"></i></div>
                     <div class="list-card-meta">
                       <div class="list-card-title">${escapeHtml(u.display_name)}</div>
-                      <div class="list-card-sub">${escapeHtml(u.designation_name || u.email)}</div>
+                      <div class="list-card-sub">${escapeHtml(u.designation_name || u.department_names || u.email)}</div>
                     </div>
                   </div>
                   <div>
-                    <span class="badge badge-waiting">ACTIVE</span>
+                    <span class="badge badge-waiting">${u.campus_name || 'Assigned'}</span>
                   </div>
                 </div>
               `).join('')}
@@ -1830,6 +2019,117 @@ async function renderAdminDashboard(container) {
     </div>
   `;
 }
+
+// Modal for teacher list breakdown drilldown
+function openTeacherListBreakdownModal(title, categoryKey, groupKey) {
+  const data = window.__dashboardTeacherData || {};
+  let list = [];
+
+  if (categoryKey === 'all') {
+    list = data.all || [];
+  } else if (categoryKey === 'classTeachers') {
+    list = data.classTeachers || [];
+  } else if (categoryKey === 'nonClassTeachers') {
+    list = data.nonClassTeachers || [];
+  } else if (categoryKey === 'single') {
+    list = (data.all || []).filter(u => u.id === groupKey);
+  } else if (data[categoryKey] && groupKey) {
+    list = data[categoryKey][groupKey] || [];
+  } else {
+    list = data.all || [];
+  }
+
+  let searchQuery = '';
+
+  function renderBreakdownModal() {
+    let filtered = list;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(u => 
+        (u.display_name && u.display_name.toLowerCase().includes(q)) ||
+        (u.email && u.email.toLowerCase().includes(q)) ||
+        (u.employee_code && u.employee_code.toLowerCase().includes(q)) ||
+        (u.campus_name && u.campus_name.toLowerCase().includes(q)) ||
+        (u.department_names && u.department_names.toLowerCase().includes(q)) ||
+        (u.designation_name && u.designation_name.toLowerCase().includes(q)) ||
+        (u.subject_names && u.subject_names.toLowerCase().includes(q))
+      );
+    }
+
+    return `
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; border-bottom:1px solid var(--border-subtle); padding-bottom:12px;">
+          <div>
+            <h2 style="margin:0 0 4px 0; font-size:1.25rem;"><i class="fa-solid fa-users text-primary"></i> ${escapeHtml(title)}</h2>
+            <div style="font-size:0.86rem; color:var(--text-muted);">
+              Total Matching Faculty: <strong style="color:var(--text-main);">${list.length}</strong>
+            </div>
+          </div>
+          <button class="btn-icon" onclick="closeModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <div style="position:relative;">
+          <input type="text" id="drilldown-search-input" class="form-input form-input-sm" style="padding-left:28px;" placeholder="Search teacher by name, email, code, subject..." value="${escapeHtml(searchQuery)}" />
+          <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
+        </div>
+
+        ${filtered.length === 0 ? `
+          <div class="empty-state" style="padding:32px 16px;">
+            <i class="fa-solid fa-user-slash"></i>
+            <p>No teachers matched your search.</p>
+          </div>
+        ` : `
+          <div class="drilldown-teachers-grid">
+            ${filtered.map(u => {
+              const initial = (u.first_name || u.display_name || 'T').charAt(0).toUpperCase();
+              const isCt = u.class_teacher_status === true || u.class_teacher_status === 'Yes' || u.class_teacher_status === 'true';
+              return `
+                <div class="drilldown-teacher-card">
+                  <div class="drilldown-avatar">${initial}</div>
+                  <div class="drilldown-info">
+                    <div class="drilldown-name">${escapeHtml(u.display_name)}</div>
+                    <div class="drilldown-sub">${escapeHtml(u.email)}${u.employee_code ? ` • ${escapeHtml(u.employee_code)}` : ''}</div>
+                    <div class="drilldown-badges">
+                      ${u.campus_name ? `<span class="task-chip chip-campus" style="font-size:0.7rem;"><i class="fa-solid fa-building-columns"></i> ${escapeHtml(u.campus_name)}</span>` : ''}
+                      ${u.designation_name ? `<span class="badge badge-secondary" style="font-size:0.7rem;">${escapeHtml(u.designation_name)}</span>` : ''}
+                      ${u.department_names ? `<span class="badge badge-not-started" style="font-size:0.7rem;">${escapeHtml(u.department_names)}</span>` : ''}
+                      ${isCt ? `<span class="badge badge-active" style="font-size:0.7rem;"><i class="fa-solid fa-chalkboard-user"></i> Class Teacher</span>` : ''}
+                      ${u.subject_names ? `<span class="task-chip" style="font-size:0.7rem;"><i class="fa-solid fa-book"></i> ${escapeHtml(u.subject_names)}</span>` : ''}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:12px; border-top:1px solid var(--border-subtle);">
+          <span style="font-size:0.82rem; color:var(--text-muted);">Showing <strong>${filtered.length}</strong> of <strong>${list.length}</strong> faculty members</span>
+          <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+      </div>
+    `;
+  }
+
+  openModal(renderBreakdownModal());
+
+  const searchInput = document.getElementById('drilldown-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      searchQuery = e.target.value;
+      const bodyEl = document.getElementById('modal-content');
+      if (bodyEl) {
+        bodyEl.innerHTML = renderBreakdownModal();
+        const newSearchInput = document.getElementById('drilldown-search-input');
+        if (newSearchInput) {
+          newSearchInput.focus();
+          newSearchInput.setSelectionRange(searchQuery.length, searchQuery.length);
+        }
+      }
+    });
+  }
+}
+window.openTeacherListBreakdownModal = openTeacherListBreakdownModal;
 
 // Admin Tasks Management
 async function renderAdminTasks(container) {
@@ -2071,7 +2371,6 @@ async function renderAdminTasks(container) {
                             <i class="fa-solid fa-building-columns"></i> ${escapeHtml(t.campus_names || 'All Campuses')}
                           </span>
                         </div>
-                        ${t.description ? `<div style="font-size:0.8rem; color:var(--text-muted); margin:4px 0 0 0; max-width:420px; line-height:1.35;">${escapeHtml(t.description)}</div>` : ''}
                       </td>
                       <td>
                         <span class="badge badge-not-started" style="font-size:0.72rem;">${t.task_type === 'RECURRING_INSTANCE' ? 'RECURRING' : t.task_type}</span>
@@ -2149,7 +2448,6 @@ async function renderAdminTasks(container) {
 
             <div class="task-card-title-group">
               <div class="task-card-title">${escapeHtml(t.title)}</div>
-              ${t.description ? `<div class="task-card-desc">${escapeHtml(t.description)}</div>` : ''}
             </div>
 
             <div class="task-card-chips">
@@ -2200,7 +2498,7 @@ function debounceTaskSearch() {
   }, 250);
 }
 
-// Modal showing list of assigned teachers for a task
+// Modal showing list of assigned teachers for a task (Cards View)
 async function openTaskAssignedTeachersModal(taskId, taskTitle) {
   try {
     const data = await api(`/reports/task-wise?task_id=${taskId}`);
@@ -2224,7 +2522,7 @@ async function openTaskAssignedTeachersModal(taskId, taskTitle) {
       }
 
       return `
-        <div style="max-height: 80vh; display:flex; flex-direction:column;">
+        <div style="display:flex; flex-direction:column; gap:16px;">
           <!-- Modal Header -->
           <div class="modal-header-with-stats">
             <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
@@ -2257,10 +2555,10 @@ async function openTaskAssignedTeachersModal(taskId, taskTitle) {
             </div>
           </div>
 
-          <!-- Interactive Search & Status Filter inside Modal -->
-          <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+          <!-- Interactive Search & Status Filter (scrolls up naturally with cards) -->
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
             <div style="position:relative; flex:1; min-width:200px;">
-              <input type="text" id="modal-teacher-search" class="form-input form-input-sm" style="padding-left:28px;" placeholder="Search teacher by name, email, campus..." value="${escapeHtml(searchQuery)}" />
+              <input type="text" id="modal-teacher-search" class="form-input form-input-sm" style="padding-left:28px;" placeholder="Search faculty by name, email, campus..." value="${escapeHtml(searchQuery)}" />
               <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:0.8rem; color:var(--text-muted); pointer-events:none;"></i>
             </div>
             <select id="modal-teacher-status" class="form-select form-select-sm" style="width:170px;">
@@ -2273,48 +2571,43 @@ async function openTaskAssignedTeachersModal(taskId, taskTitle) {
             </select>
           </div>
 
-          <!-- Teachers Table -->
-          <div class="table-responsive" style="max-height: 400px; overflow-y:auto; border:1px solid var(--border-color); border-radius:var(--radius-md);">
-            <table class="table" style="margin-bottom:0; font-size:0.88rem;">
-              <thead style="position:sticky; top:0; background:var(--bg-surface); z-index:2;">
-                <tr>
-                  <th style="width:40px;">#</th>
-                  <th>Faculty Member</th>
-                  <th>Campus</th>
-                  <th>Status</th>
-                  <th>Due Date</th>
-                  <th>Submission Time</th>
-                  <th style="text-align:right;">Action</th>
-                </tr>
-              </thead>
-              <tbody id="modal-teacher-rows">
-                ${filtered.length === 0 ? `
-                  <tr><td colspan="7" class="empty-state" style="padding:24px;">No faculty members matched the search.</td></tr>
-                ` : filtered.map((r, i) => `
-                  <tr>
-                    <td><span style="color:var(--text-muted); font-size:0.8rem;">${i + 1}</span></td>
-                    <td>
-                      <strong>${escapeHtml(r.display_name)}</strong>
-                      <div style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(r.email)}</div>
-                    </td>
-                    <td><span class="badge badge-secondary" style="font-size:0.72rem;">${escapeHtml(r.campus_name)}</span></td>
-                    <td><span class="badge badge-${r.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(r.status)}</span></td>
-                    <td>${formatDateTime(r.due_at)}</td>
-                    <td>${r.submitted_at ? formatDateTime(r.submitted_at) : '<span class="text-muted">Not Submitted</span>'}</td>
-                    <td style="text-align:right;">
-                      ${(r.status === 'SUBMITTED_ON_TIME' || r.status === 'SUBMITTED_LATE') ? `
-                        <button class="btn btn-outline btn-sm" style="padding:2px 8px; font-size:0.78rem;" onclick="closeModal(); openResponseViewerModal('${taskId}', '${r.user_id}', '${escapeHtml(r.display_name).replace(/'/g, "\\'")}')">
+          <!-- Cards View of Assigned Teachers -->
+          ${filtered.length === 0 ? `
+            <div class="empty-state" style="padding:32px 16px;">
+              <i class="fa-solid fa-users-slash"></i>
+              <p>No faculty members match the filter criteria.</p>
+            </div>
+          ` : `
+            <div class="teacher-assigned-cards-grid">
+              ${filtered.map(r => {
+                const statusKey = (r.status || 'NOT_STARTED').toLowerCase();
+                const isSubmitted = r.status === 'SUBMITTED_ON_TIME' || r.status === 'SUBMITTED_LATE';
+                const submitText = r.submitted_at ? `Submitted: ${formatDateTime(r.submitted_at)}` : 'Not Submitted';
+                return `
+                  <div class="teacher-assigned-card status-border-${statusKey}">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                      <div class="teacher-assigned-name">${escapeHtml(r.display_name)}</div>
+                      <span class="badge badge-${statusKey.replace(/_/g, '-')}">${formatStatus(r.status)}</span>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:4px;">
+                      <div class="teacher-assigned-meta ${isSubmitted ? 'submitted' : ''}">
+                        <i class="fa-regular fa-clock"></i>
+                        <span>${submitText}</span>
+                      </div>
+                      ${isSubmitted ? `
+                        <button type="button" class="btn btn-outline btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="closeModal(); openResponseViewerModal('${taskId}', '${r.user_id}', '${escapeHtml(r.display_name).replace(/'/g, "\\'")}')" title="View Submission">
                           <i class="fa-solid fa-file-lines"></i> View
                         </button>
-                      ` : '<span class="text-muted" style="font-size:0.78rem;">-</span>'}
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
+                      ` : ''}
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `}
 
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:12px; border-top:1px solid var(--border-subtle);">
             <span style="font-size:0.82rem; color:var(--text-muted);">Showing <strong>${filtered.length}</strong> of <strong>${rows.length}</strong> assigned teachers</span>
             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
           </div>
@@ -2334,7 +2627,6 @@ async function openTaskAssignedTeachersModal(taskId, taskTitle) {
         const bodyEl = document.getElementById('modal-content');
         if (bodyEl) {
           bodyEl.innerHTML = renderModalBody();
-          // Re-focus and restore caret
           const newSearchInput = document.getElementById('modal-teacher-search');
           if (newSearchInput) {
             newSearchInput.focus();
@@ -2773,6 +3065,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
       `;
 
     case 3:
+      const activeCampuses = (campuses || []).filter(c => (c.status || 'ACTIVE') === 'ACTIVE' && c.status !== 'INACTIVE');
       return `
         <div style="margin-bottom:20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
           <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-building-columns text-primary" style="margin-right:6px;"></i> Step 3: Select Authorized Campuses</h3>
@@ -2780,7 +3073,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         </div>
 
         <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px;">
-          ${campuses.map(c => `
+          ${activeCampuses.map(c => `
             <label class="choice-tile" style="padding: 14px 16px;">
               <input type="checkbox" name="tb_campuses" value="${c.id}" ${tb.campus_ids.includes(c.id) ? 'checked' : ''} />
               <div>
@@ -2798,13 +3091,19 @@ async function renderTaskBuilderStepContent(tb, campuses) {
       `;
 
     case 4:
-      const [depts, desigs, subjs, cats, groups] = await Promise.all([
-        api('/masters?master_type=DEPARTMENT'),
-        api('/masters?master_type=DESIGNATION'),
-        api('/masters?master_type=SUBJECT'),
-        api('/masters?master_type=CATEGORY'),
+      const [deptsRaw, desigsRaw, subjsRaw, catsRaw, groupsRaw] = await Promise.all([
+        api('/masters?master_type=DEPARTMENT&status=ACTIVE'),
+        api('/masters?master_type=DESIGNATION&status=ACTIVE'),
+        api('/masters?master_type=SUBJECT&status=ACTIVE'),
+        api('/masters?master_type=CATEGORY&status=ACTIVE'),
         api('/groups')
       ]);
+
+      const depts = (deptsRaw || []).filter(d => (d.status || 'ACTIVE') === 'ACTIVE' && d.status !== 'INACTIVE');
+      const desigs = (desigsRaw || []).filter(d => (d.status || 'ACTIVE') === 'ACTIVE' && d.status !== 'INACTIVE');
+      const subjs = (subjsRaw || []).filter(s => (s.status || 'ACTIVE') === 'ACTIVE' && s.status !== 'INACTIVE');
+      const cats = (catsRaw || []).filter(c => (c.status || 'ACTIVE') === 'ACTIVE' && c.status !== 'INACTIVE');
+      const groups = (groupsRaw || []).filter(g => (g.status || 'ACTIVE') === 'ACTIVE' && g.status !== 'INACTIVE' && g.status !== 'DRAFT');
 
       const ar = tb.audience_rules || {};
       const currentOp = ar.operator || 'AND';

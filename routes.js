@@ -891,17 +891,48 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
       // Map campus from user_attributes or user_access
       users = users.map(u => {
         const attrs = store.user_attributes.filter(a => a.user_id === u.id);
-        let camp = null;
-        const attrWithCamp = attrs.find(a => a.campus_id);
-        if (attrWithCamp) camp = store.campuses.find(c => c.id === attrWithCamp.campus_id);
-        if (!camp) {
-          const acc = store.user_access.find(a => a.user_id === u.id && a.campus_id);
-          if (acc) camp = store.campuses.find(c => c.id === acc.campus_id);
+        const userCampuses = [];
+        if (u.campus_id) {
+          const cp = store.campuses.find(c => c.id === u.campus_id);
+          if (cp) userCampuses.push(cp);
         }
+        attrs.forEach(a => {
+          if (a.campus_id && !userCampuses.some(c => c.id === a.campus_id)) {
+            const cp = store.campuses.find(c => c.id === a.campus_id);
+            if (cp) userCampuses.push(cp);
+          }
+        });
+        const userAccessList = store.user_access.filter(a => a.user_id === u.id);
+        userAccessList.forEach(a => {
+          if (a.campus_id && !userCampuses.some(c => c.id === a.campus_id)) {
+            const cp = store.campuses.find(c => c.id === a.campus_id);
+            if (cp) userCampuses.push(cp);
+          }
+        });
+
+        const depts = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'DEPARTMENT')).filter(Boolean);
+        const desigs = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'DESIGNATION')).filter(Boolean);
+        const subjs = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'SUBJECT')).filter(Boolean);
+        const cats = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'CATEGORY')).filter(Boolean);
+        
+        const grpMemberships = store.group_memberships.filter(gm => gm.user_id === u.id && gm.status === 'APPROVED');
+        const grps = grpMemberships.map(gm => store.groups.find(g => g.id === gm.group_id)).filter(Boolean);
+
         return {
           ...auth.sanitizeUser(u),
-          campus_name: camp ? camp.name : '',
-          campus_id: camp ? camp.id : null,
+          campus_name: userCampuses[0] ? userCampuses[0].name : '',
+          campus_id: userCampuses[0] ? userCampuses[0].id : null,
+          campuses: userCampuses,
+          department_names: depts.map(d => d.name).join(', '),
+          designation_name: desigs[0] ? desigs[0].name : '',
+          subject_names: subjs.map(s => s.name).join(', '),
+          category_names: cats.map(c => c.name).join(', '),
+          group_names: grps.map(g => g.name).join(', '),
+          department_ids: depts.map(d => d.id),
+          designation_ids: desigs.map(d => d.id),
+          subject_ids: subjs.map(s => s.id),
+          category_ids: cats.map(c => c.id),
+          group_ids: grps.map(g => g.id),
           attributes: attrs
         };
       });
@@ -910,14 +941,83 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
         users = users.filter(u => !u.campus_id || req.user.authorizedCampusIds.includes(u.campus_id));
       }
       if (campus_id) {
-        users = users.filter(u => u.campus_id === campus_id);
+        users = users.filter(u => u.campus_id === campus_id || (u.campuses || []).some(c => c.id === campus_id));
       }
     } else {
       let q = `
         SELECT DISTINCT ON (u.id)
           u.id, u.email, u.user_type, u.employee_code, u.first_name, u.last_name, u.display_name, u.phone, u.status, u.class_teacher_status, u.created_at,
           COALESCE(u.campus_id, c_attr.id, c_acc.id) as campus_id,
-          COALESCE(c_direct.name, c_attr.name, c_acc.name, '') as campus_name
+          COALESCE(c_direct.name, c_attr.name, c_acc.name, '') as campus_name,
+          (
+            SELECT COALESCE(json_agg(json_build_object('id', c_all.id, 'name', c_all.name, 'code', c_all.code)), '[]'::json)
+            FROM (
+              SELECT DISTINCT c.id, c.name, c.code
+              FROM campuses c
+              WHERE c.id = u.campus_id
+                 OR c.id IN (SELECT ua.campus_id FROM user_attributes ua WHERE ua.user_id = u.id AND ua.campus_id IS NOT NULL)
+                 OR c.id IN (SELECT acc.campus_id FROM user_access acc WHERE acc.user_id = u.id AND acc.campus_id IS NOT NULL)
+            ) c_all
+          ) as campuses,
+          (
+            SELECT string_agg(mv.name, ', ' ORDER BY mv.name)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'DEPARTMENT'
+          ) as department_names,
+          (
+            SELECT string_agg(mv.name, ', ' ORDER BY mv.name)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'DESIGNATION'
+          ) as designation_name,
+          (
+            SELECT string_agg(mv.name, ', ' ORDER BY mv.name)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'SUBJECT'
+          ) as subject_names,
+          (
+            SELECT string_agg(mv.name, ', ' ORDER BY mv.name)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY'
+          ) as category_names,
+          (
+            SELECT string_agg(g.name, ', ' ORDER BY g.name)
+            FROM group_memberships gm
+            JOIN groups g ON gm.group_id = g.id
+            WHERE gm.user_id = u.id AND gm.status = 'APPROVED'
+          ) as group_names,
+          (
+            SELECT COALESCE(json_agg(ua.master_value_id), '[]'::json)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'DEPARTMENT'
+          ) as department_ids,
+          (
+            SELECT COALESCE(json_agg(ua.master_value_id), '[]'::json)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'DESIGNATION'
+          ) as designation_ids,
+          (
+            SELECT COALESCE(json_agg(ua.master_value_id), '[]'::json)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'SUBJECT'
+          ) as subject_ids,
+          (
+            SELECT COALESCE(json_agg(ua.master_value_id), '[]'::json)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY'
+          ) as category_ids,
+          (
+            SELECT COALESCE(json_agg(gm.group_id), '[]'::json)
+            FROM group_memberships gm
+            WHERE gm.user_id = u.id AND gm.status = 'APPROVED'
+          ) as group_ids
         FROM users u
         LEFT JOIN campuses c_direct ON u.campus_id = c_direct.id
         LEFT JOIN LATERAL (

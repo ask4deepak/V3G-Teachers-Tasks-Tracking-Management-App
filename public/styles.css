@@ -2261,4 +2261,277 @@ button, input, select, textarea {
   }
 }
 
+/* ==========================================================================
+   Assigned Teachers Modal Cards View & Status Accents
+   ========================================================================== */
+
+.teacher-assigned-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.teacher-assigned-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--text-muted);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+}
+
+.teacher-assigned-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.teacher-assigned-card.status-border-submitted_on_time,
+.teacher-assigned-card.status-border-submitted-on-time {
+  border-left-color: var(--success);
+  background: linear-gradient(to right, rgba(16, 185, 129, 0.03), var(--bg-card) 20%);
+}
+
+.teacher-assigned-card.status-border-submitted_late,
+.teacher-assigned-card.status-border-submitted-late {
+  border-left-color: var(--warning);
+  background: linear-gradient(to right, rgba(245, 158, 11, 0.03), var(--bg-card) 20%);
+}
+
+.teacher-assigned-card.status-border-overdue {
+  border-left-color: var(--danger);
+  background: linear-gradient(to right, rgba(239, 68, 68, 0.03), var(--bg-card) 20%);
+}
+
+.teacher-assigned-card.status-border-in_progress,
+.teacher-assigned-card.status-border-in-progress {
+  border-left-color: var(--primary);
+  background: linear-gradient(to right, rgba(37, 99, 235, 0.03), var(--bg-card) 20%);
+}
+
+.teacher-assigned-card.status-border-not_started,
+.teacher-assigned-card.status-border-not-started {
+  border-left-color: var(--text-muted);
+}
+
+.teacher-assigned-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.3;
+}
+
+.teacher-assigned-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.teacher-assigned-meta.submitted {
+  color: var(--success);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Dashboard Teacher Distribution Breakdown Sections & Chips
+   ========================================================================== */
+
+.dashboard-breakdown-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 24px;
+}
+
+.dashboard-breakdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+}
+
+.dashboard-breakdown-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.breakdown-group-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.breakdown-group-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.breakdown-chips-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.breakdown-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  font-size: 0.82rem;
+  color: var(--text-body);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.breakdown-chip:hover {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.breakdown-chip-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  min-width: 18px;
+  border-radius: 10px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  background: var(--border-subtle);
+  color: var(--text-main);
+}
+
+.breakdown-chip:hover .breakdown-chip-count {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+/* Total Teachers Big Chip */
+.breakdown-chip-highlight {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+  font-weight: 600;
+}
+
+.breakdown-chip-highlight .breakdown-chip-count {
+  background: #ffffff;
+  color: var(--primary);
+}
+
+.breakdown-chip-highlight:hover {
+  background: var(--primary-hover);
+  color: #ffffff;
+}
+
+/* ==========================================================================
+   Teacher Drilldown Modal
+   ========================================================================== */
+
+.drilldown-teachers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.drilldown-teacher-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  transition: all var(--transition-fast);
+}
+
+.drilldown-teacher-card:hover {
+  border-color: var(--primary-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.drilldown-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-full);
+  background: var(--primary-light);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.drilldown-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.drilldown-name {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drilldown-sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drilldown-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+
 
