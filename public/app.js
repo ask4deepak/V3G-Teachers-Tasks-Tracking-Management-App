@@ -2189,6 +2189,7 @@ async function renderAdminTasks(container) {
 
   // Compute section counts
   const activeCount = allTasks.filter(t => (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && !t.is_scheduled).length;
+  const draftCount = allTasks.filter(t => t.status === 'DRAFT').length;
   const scheduledCount = allTasks.filter(t => t.status === 'SCHEDULED' || t.is_scheduled).length;
   const pausedCount = allTasks.filter(t => t.status === 'PAUSED').length;
   const archivedCount = allTasks.filter(t => t.status === 'ARCHIVED').length;
@@ -2197,6 +2198,9 @@ async function renderAdminTasks(container) {
   let tasks = allTasks.filter(t => {
     if (state.taskTab === 'ACTIVE') {
       return (t.status === 'ACTIVE' || t.status === 'PUBLISHED') && !t.is_scheduled;
+    }
+    if (state.taskTab === 'DRAFT') {
+      return t.status === 'DRAFT';
     }
     if (state.taskTab === 'SCHEDULED') {
       return t.status === 'SCHEDULED' || t.is_scheduled;
@@ -2249,6 +2253,9 @@ async function renderAdminTasks(container) {
   });
 
   function getAdminStatusBadge(t) {
+    if (t.status === 'DRAFT') {
+      return `<span class="badge badge-draft"><i class="fa-solid fa-file-pen"></i> Draft</span>`;
+    }
     if (t.status === 'SCHEDULED' || t.is_scheduled) {
       return `<span class="badge badge-scheduled"><i class="fa-solid fa-calendar-clock"></i> Scheduled</span>`;
     }
@@ -2283,6 +2290,9 @@ async function renderAdminTasks(container) {
     <div class="nav-tab-pills">
       <button class="tab-pill ${state.taskTab === 'ACTIVE' ? 'active' : ''}" onclick="state.taskTab = 'ACTIVE'; loadCurrentView();">
         <i class="fa-solid fa-circle-check"></i> Active <span class="tab-count-badge">${activeCount}</span>
+      </button>
+      <button class="tab-pill ${state.taskTab === 'DRAFT' ? 'active' : ''}" onclick="state.taskTab = 'DRAFT'; loadCurrentView();">
+        <i class="fa-solid fa-file-pen"></i> Drafts <span class="tab-count-badge">${draftCount}</span>
       </button>
       <button class="tab-pill ${state.taskTab === 'SCHEDULED' ? 'active' : ''}" onclick="state.taskTab = 'SCHEDULED'; loadCurrentView();">
         <i class="fa-solid fa-calendar-clock"></i> Scheduled <span class="tab-count-badge">${scheduledCount}</span>
