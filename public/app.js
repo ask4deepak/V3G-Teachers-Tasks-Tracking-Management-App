@@ -126,9 +126,24 @@ function closeModal() {
 window.openModal = openModal;
 window.closeModal = closeModal;
 
+function parseDateIST(val) {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  let s = String(val).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) {
+    s = s.length === 16 ? `${s}:00+05:30` : `${s}+05:30`;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    s = `${s}T00:00:00+05:30`;
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+window.parseDateIST = parseDateIST;
+
 function getLocalDateTimeLocalString(d = new Date(), offsetHours = 0) {
-  const baseTime = (d instanceof Date) ? d.getTime() : new Date(d).getTime();
-  const targetDate = new Date(baseTime + offsetHours * 60 * 60 * 1000);
+  const parsed = parseDateIST(d) || new Date();
+  const targetDate = new Date(parsed.getTime() + offsetHours * 60 * 60 * 1000);
   
   // Format in Asia/Kolkata timezone (or configured timezone)
   const tz = (state.settings && state.settings.timezone) || 'Asia/Kolkata';
@@ -3637,8 +3652,8 @@ function handleTaskOpenDateChange(val) {
   state.taskBuilder.open_at = val;
   const deadlineInput = document.getElementById('tb-deadline');
   if (deadlineInput) {
-    const openDate = new Date(val);
-    if (!isNaN(openDate.getTime())) {
+    const openDate = parseDateIST(val);
+    if (openDate && !isNaN(openDate.getTime())) {
       const defaultOffset = (state.settings && parseInt(state.settings.default_deadline_offset_hours, 10)) || 24;
       const newDeadline = getLocalDateTimeLocalString(openDate, defaultOffset);
       deadlineInput.value = newDeadline;
@@ -7429,7 +7444,9 @@ function closeMobileSidebar() {
 
 function formatDate(d) {
   if (!d) return 'N/A';
-  return new Date(d).toLocaleDateString('en-IN', {
+  const parsed = parseDateIST(d);
+  if (!parsed) return 'N/A';
+  return parsed.toLocaleDateString('en-IN', {
     timeZone: 'Asia/Kolkata',
     day: '2-digit',
     month: 'short',
@@ -7439,7 +7456,9 @@ function formatDate(d) {
 
 function formatDateTime(d) {
   if (!d) return 'N/A';
-  return new Date(d).toLocaleString('en-IN', {
+  const parsed = parseDateIST(d);
+  if (!parsed) return 'N/A';
+  return parsed.toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
     day: '2-digit',
     month: 'short',

@@ -1253,7 +1253,26 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
+/**
+ * Safely parse date strings ensuring IST (Asia/Kolkata, UTC+05:30) interpretation
+ * when no timezone offset is provided (e.g. from datetime-local inputs).
+ */
+function parseDateIST(val) {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  let s = String(val).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) {
+    s = s.length === 16 ? `${s}:00+05:30` : `${s}+05:30`;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    s = `${s}T00:00:00+05:30`;
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 module.exports = {
+  parseDateIST,
   resolveTaskAudience,
   publishTask,
   processRecurringTasks,

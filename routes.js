@@ -2268,11 +2268,14 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
 
     const taskId = uuidv4();
     const now = new Date();
-    const openDate = open_at ? new Date(open_at) : now;
-    const deadline = deadline_at ? new Date(deadline_at) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const openDate = open_at ? (services.parseDateIST(open_at) || now) : now;
+    const deadline = deadline_at ? (services.parseDateIST(deadline_at) || new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     let nextGen = null;
     if (task_type === 'RECURRING_TEMPLATE' && recurrence_config) {
+      if (recurrence_config.end_date) {
+        recurrence_config.end_date = services.parseDateIST(recurrence_config.end_date);
+      }
       nextGen = services.calculateNextOccurrence(recurrence_config, now);
     }
 
@@ -2369,8 +2372,8 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
     const updatedQuestions = questions !== undefined ? questions : (typeof task.questions === 'string' ? JSON.parse(task.questions) : task.questions);
     const updatedAudienceRules = audience_rules !== undefined ? audience_rules : (typeof task.audience_rules === 'string' ? JSON.parse(task.audience_rules) : task.audience_rules);
     const updatedExclusions = recipient_exclusions !== undefined ? recipient_exclusions : (typeof task.recipient_exclusions === 'string' ? JSON.parse(task.recipient_exclusions) : task.recipient_exclusions);
-    const updatedOpenAt = open_at ? new Date(open_at) : task.open_at;
-    const updatedDeadlineAt = deadline_at ? new Date(deadline_at) : task.deadline_at;
+    const updatedOpenAt = open_at ? (services.parseDateIST(open_at) || task.open_at) : task.open_at;
+    const updatedDeadlineAt = deadline_at ? (services.parseDateIST(deadline_at) || task.deadline_at) : task.deadline_at;
     const updatedAllowLate = allow_late_submissions !== undefined ? Boolean(allow_late_submissions) : (task.allow_late_submissions !== false);
     const updatedAllowEdit = allow_edit_submission !== undefined ? Boolean(allow_edit_submission) : (task.allow_edit_submission === true);
     const updatedSortOrder = sort_order !== undefined ? Number(sort_order) : (task.sort_order || 0);
