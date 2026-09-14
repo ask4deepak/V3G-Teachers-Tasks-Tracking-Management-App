@@ -44,3 +44,12 @@ INSERT INTO roles (id, name, description, permissions, is_system_role, status) V
     "tasks.view": true, "users.view": true
 }'::jsonb, true, 'ACTIVE')
 ON CONFLICT (name) DO NOTHING;
+
+-- Default Master Categories
+INSERT INTO master_categories (id, name, code, selection_mode, status, show_on_dashboard, is_system, sort_order) VALUES
+('11111111-0000-0000-0000-000000000001', 'Departments', 'DEPARTMENT', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 1),
+('11111111-0000-0000-0000-000000000002', 'Designations', 'DESIGNATION', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 2),
+('11111111-0000-0000-0000-000000000003', 'Subjects', 'SUBJECT', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 3),
+('11111111-0000-0000-0000-000000000004', 'Categories', 'CATEGORY', 'SINGLE_SELECT', 'ACTIVE', TRUE, TRUE, 4),
+('11111111-0000-0000-0000-000000000005', 'Classes / Sections', 'CLASS', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 5)
+ON CONFLICT (code) DO NOTHING;

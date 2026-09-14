@@ -291,19 +291,22 @@ router.get('/profile', auth.requireAuth, async (req, res) => {
 router.put('/profile', auth.requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { phone, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [], campus_id } = req.body;
+    const { phone, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [], class_ids = [], master_value_ids = [], campus_id } = req.body;
 
     // Validate campus
     if (!campus_id) return res.status(400).json({ error: 'Campus is required' });
 
+    const isClassTeacher = Boolean(class_teacher_status);
+    const validClassIds = isClassTeacher ? (Array.isArray(class_ids) ? class_ids : []) : [];
+
     // Validate master values server-side
-    const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
+    const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids, ...validClassIds, ...(Array.isArray(master_value_ids) ? master_value_ids : [])].filter(Boolean);
     
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
       const u = store.users.find(x => x.id === userId);
       if (phone !== undefined) u.phone = phone;
-      if (class_teacher_status !== undefined) u.class_teacher_status = Boolean(class_teacher_status);
+      if (class_teacher_status !== undefined) u.class_teacher_status = isClassTeacher;
       u.updated_at = new Date();
 
       // Clear existing attributes for this user
@@ -325,7 +328,7 @@ router.put('/profile', auth.requireAuth, async (req, res) => {
         await client.query(`
           UPDATE users SET phone = COALESCE($1, phone), class_teacher_status = $2, updated_at = NOW()
           WHERE id = $3
-        `, [phone, Boolean(class_teacher_status), userId]);
+        `, [phone, isClassTeacher, userId]);
 
         await client.query('DELETE FROM user_attributes WHERE user_id = $1', [userId]);
 
@@ -741,6 +744,198 @@ router.post('/masters/bulk', auth.requirePermission('masters.create'), async (re
   }
 });
 
+// ============================================================================
+// 3B. MASTER CATEGORIES (DYNAMIC TYPES CONFIGURATION)
+// ============================================================================
+
+router.get('/master-categories', auth.requireAuth, async (req, res) => {
+  try {
+    const { status, include_inactive } = req.query;
+    let categories = [];
+    if (db.isMemoryFallback()) {
+      categories = [...(db.getMemoryStore().master_categories || [])];
+      if (status) {
+        categories = categories.filter(c => c.status === status);
+      } else if (!include_inactive) {
+        categories = categories.filter(c => c.status === 'ACTIVE');
+      }
+      categories.sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+    } else {
+      let q = 'SELECT * FROM master_categories WHERE 1=1';
+      const p = [];
+      if (status) {
+        p.push(status);
+        q += ` AND status = $${p.length}`;
+      } else if (!include_inactive) {
+        q += " AND status = 'ACTIVE'";
+      }
+      q += ' ORDER BY sort_order ASC, name ASC';
+      const result = await db.query(q, p);
+      categories = result.rows;
+    }
+    res.json(categories);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/master-categories', auth.requirePermission('masters.create'), async (req, res) => {
+  try {
+    const { name, code, selection_mode = 'MULTI_SELECT', show_on_dashboard = true, sort_order = 0, status = 'ACTIVE' } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Category name is required' });
+
+    const cleanName = name.trim();
+    const cleanCode = (code || cleanName).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_').substring(0, 50);
+    const validMode = selection_mode === 'SINGLE_SELECT' ? 'SINGLE_SELECT' : 'MULTI_SELECT';
+    const validStatus = status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    const id = uuidv4();
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      store.master_categories = store.master_categories || [];
+      if (store.master_categories.some(c => c.code === cleanCode)) {
+        return res.status(400).json({ error: `A master category with code "${cleanCode}" already exists` });
+      }
+      const newCat = {
+        id,
+        name: cleanName,
+        code: cleanCode,
+        selection_mode: validMode,
+        status: validStatus,
+        show_on_dashboard: Boolean(show_on_dashboard),
+        is_system: false,
+        sort_order: parseInt(sort_order, 10) || (store.master_categories.length + 1),
+        created_at: now,
+        updated_at: now
+      };
+      store.master_categories.push(newCat);
+    } else {
+      const existing = await db.query('SELECT id FROM master_categories WHERE code = $1', [cleanCode]);
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: `A master category with code "${cleanCode}" already exists` });
+      }
+      await db.query(`
+        INSERT INTO master_categories (id, name, code, selection_mode, status, show_on_dashboard, is_system, sort_order, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, NOW(), NOW())
+      `, [id, cleanName, cleanCode, validMode, validStatus, Boolean(show_on_dashboard), parseInt(sort_order, 10) || 0]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'MASTER_CATEGORY_CREATED',
+      entityType: 'MASTER_CATEGORY',
+      entityId: id,
+      description: `Created custom master category "${cleanName}" (${cleanCode}, mode: ${validMode})`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, id, code: cleanCode, name: cleanName });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/master-categories/:id', auth.requirePermission('masters.edit'), async (req, res) => {
+  try {
+    const catId = req.params.id;
+    const { name, selection_mode, show_on_dashboard, status, sort_order } = req.body;
+    const now = new Date();
+
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const cat = (store.master_categories || []).find(c => c.id === catId);
+      if (!cat) return res.status(404).json({ error: 'Master category not found' });
+      if (name && name.trim()) cat.name = name.trim();
+      if (selection_mode) cat.selection_mode = selection_mode === 'SINGLE_SELECT' ? 'SINGLE_SELECT' : 'MULTI_SELECT';
+      if (show_on_dashboard !== undefined) cat.show_on_dashboard = Boolean(show_on_dashboard);
+      if (status) cat.status = status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      if (sort_order !== undefined) cat.sort_order = parseInt(sort_order, 10) || 0;
+      cat.updated_at = now;
+    } else {
+      const cRes = await db.query('SELECT * FROM master_categories WHERE id = $1', [catId]);
+      const cat = cRes.rows[0];
+      if (!cat) return res.status(404).json({ error: 'Master category not found' });
+
+      await db.query(`
+        UPDATE master_categories
+        SET name = COALESCE($1, name),
+            selection_mode = COALESCE($2, selection_mode),
+            show_on_dashboard = COALESCE($3, show_on_dashboard),
+            status = COALESCE($4, status),
+            sort_order = COALESCE($5, sort_order),
+            updated_at = NOW()
+        WHERE id = $6
+      `, [
+        name ? name.trim() : null,
+        selection_mode ? (selection_mode === 'SINGLE_SELECT' ? 'SINGLE_SELECT' : 'MULTI_SELECT') : null,
+        show_on_dashboard !== undefined ? Boolean(show_on_dashboard) : null,
+        status ? (status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE') : null,
+        sort_order !== undefined ? parseInt(sort_order, 10) : null,
+        catId
+      ]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'MASTER_CATEGORY_UPDATED',
+      entityType: 'MASTER_CATEGORY',
+      entityId: catId,
+      description: `Updated master category configuration (id: ${catId})`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Master category updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/master-categories/:id', auth.requirePermission('masters.deactivate'), async (req, res) => {
+  try {
+    const catId = req.params.id;
+    if (db.isMemoryFallback()) {
+      const store = db.getMemoryStore();
+      const cat = (store.master_categories || []).find(c => c.id === catId);
+      if (!cat) return res.status(404).json({ error: 'Master category not found' });
+      if (cat.is_system) return res.status(400).json({ error: 'System categories cannot be deleted' });
+      
+      const hasValues = (store.master_values || []).some(m => m.master_type === cat.code);
+      if (hasValues) {
+        cat.status = 'INACTIVE';
+        cat.updated_at = new Date();
+        return res.json({ success: true, message: 'Category has master values attached; status deactivated to INACTIVE' });
+      }
+      store.master_categories = store.master_categories.filter(c => c.id !== catId);
+    } else {
+      const cRes = await db.query('SELECT * FROM master_categories WHERE id = $1', [catId]);
+      const cat = cRes.rows[0];
+      if (!cat) return res.status(404).json({ error: 'Master category not found' });
+      if (cat.is_system) return res.status(400).json({ error: 'System categories cannot be deleted' });
+
+      const countRes = await db.query('SELECT COUNT(*) as count FROM master_values WHERE master_type = $1', [cat.code]);
+      if (parseInt(countRes.rows[0].count, 10) > 0) {
+        await db.query("UPDATE master_categories SET status = 'INACTIVE', updated_at = NOW() WHERE id = $1", [catId]);
+        return res.json({ success: true, message: 'Category has master values attached; status deactivated to INACTIVE' });
+      }
+      await db.query('DELETE FROM master_categories WHERE id = $1', [catId]);
+    }
+
+    await services.logAudit({
+      userId: req.user.id,
+      action: 'MASTER_CATEGORY_DELETED',
+      entityType: 'MASTER_CATEGORY',
+      entityId: catId,
+      description: `Deleted custom master category (id: ${catId})`,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Master category deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/masters', auth.requireAuth, async (req, res) => {
   try {
     const { master_type, campus_id, status = 'ACTIVE' } = req.query;
@@ -914,7 +1109,13 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
         const desigs = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'DESIGNATION')).filter(Boolean);
         const subjs = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'SUBJECT')).filter(Boolean);
         const cats = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'CATEGORY')).filter(Boolean);
+        const classes = attrs.map(a => store.master_values.find(mv => mv.id === a.master_value_id && mv.master_type === 'CLASS')).filter(Boolean);
         
+        const richAttributes = attrs.map(a => {
+          const mv = store.master_values.find(m => m.id === a.master_value_id);
+          return mv ? { id: mv.id, master_value_id: mv.id, master_type: mv.master_type, name: mv.name, code: mv.code } : null;
+        }).filter(Boolean);
+
         const grpMemberships = store.group_memberships.filter(gm => gm.user_id === u.id && gm.status === 'APPROVED');
         const grps = grpMemberships.map(gm => store.groups.find(g => g.id === gm.group_id)).filter(Boolean);
 
@@ -927,13 +1128,15 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
           designation_name: desigs[0] ? desigs[0].name : '',
           subject_names: subjs.map(s => s.name).join(', '),
           category_names: cats.map(c => c.name).join(', '),
+          class_names: classes.map(c => c.name).join(', '),
           group_names: grps.map(g => g.name).join(', '),
           department_ids: depts.map(d => d.id),
           designation_ids: desigs.map(d => d.id),
           subject_ids: subjs.map(s => s.id),
           category_ids: cats.map(c => c.id),
+          class_ids: classes.map(c => c.id),
           group_ids: grps.map(g => g.id),
-          attributes: attrs
+          attributes: richAttributes
         };
       });
 
@@ -984,6 +1187,12 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
             WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY'
           ) as category_names,
           (
+            SELECT string_agg(mv.name, ', ' ORDER BY mv.name)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'CLASS'
+          ) as class_names,
+          (
             SELECT string_agg(g.name, ', ' ORDER BY g.name)
             FROM group_memberships gm
             JOIN groups g ON gm.group_id = g.id
@@ -1013,6 +1222,18 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
             JOIN master_values mv ON ua.master_value_id = mv.id
             WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY'
           ) as category_ids,
+          (
+            SELECT COALESCE(json_agg(ua.master_value_id), '[]'::json)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id AND mv.master_type = 'CLASS'
+          ) as class_ids,
+          (
+            SELECT COALESCE(json_agg(json_build_object('id', mv.id, 'master_value_id', mv.id, 'master_type', mv.master_type, 'name', mv.name, 'code', mv.code)), '[]'::json)
+            FROM user_attributes ua
+            JOIN master_values mv ON ua.master_value_id = mv.id
+            WHERE ua.user_id = u.id
+          ) as attributes,
           (
             SELECT COALESCE(json_agg(gm.group_id), '[]'::json)
             FROM group_memberships gm
@@ -1066,7 +1287,7 @@ router.get('/users', auth.requirePermission('users.view'), async (req, res) => {
 
 router.post('/users', auth.requirePermission('users.create'), async (req, res) => {
   try {
-    const { email, password = 'Password@123', first_name, last_name, employee_code, phone, user_type = 'TEACHER', campus_id, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [] } = req.body;
+    const { email, password = 'Password@123', first_name, last_name, employee_code, phone, user_type = 'TEACHER', campus_id, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [], class_ids = [], master_value_ids = [] } = req.body;
 
     if (!email || !first_name || !last_name) {
       return res.status(400).json({ error: 'Email, First Name, and Last Name are required' });
@@ -1078,6 +1299,9 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
     const userId = uuidv4();
     const displayName = `${first_name} ${last_name}`.trim();
     const now = new Date();
+    const isClassTeacher = Boolean(class_teacher_status);
+    const validClassIds = isClassTeacher ? (Array.isArray(class_ids) ? class_ids : []) : [];
+    const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids, ...validClassIds, ...(Array.isArray(master_value_ids) ? master_value_ids : [])].filter(Boolean);
 
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
@@ -1095,7 +1319,7 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
         display_name: displayName,
         phone: phone || null,
         status: 'ACTIVE',
-        class_teacher_status: Boolean(class_teacher_status),
+        class_teacher_status: isClassTeacher,
         campus_id: campus_id || null,
         last_login_at: null,
         created_at: now,
@@ -1115,7 +1339,6 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
             updated_at: now
           });
         }
-        const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
         for (const mid of allMasterIds) {
           store.user_attributes.push({
             id: uuidv4(),
@@ -1132,7 +1355,7 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
         await client.query(`
           INSERT INTO users (id, email, password_hash, user_type, employee_code, first_name, last_name, display_name, phone, status, class_teacher_status, campus_id)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE', $10, $11)
-        `, [userId, email, hash, user_type, employee_code || null, first_name, last_name, displayName, phone || null, Boolean(class_teacher_status), campus_id || null]);
+        `, [userId, email, hash, user_type, employee_code || null, first_name, last_name, displayName, phone || null, isClassTeacher, campus_id || null]);
 
         if (campus_id) {
           const rRes = await client.query("SELECT id FROM roles WHERE name ILIKE '%Teacher%' LIMIT 1");
@@ -1145,7 +1368,6 @@ router.post('/users', auth.requirePermission('users.create'), async (req, res) =
             `, [uuidv4(), userId, roleId, campus_id]);
           }
 
-          const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
           for (const mid of allMasterIds) {
             await client.query(`
               INSERT INTO user_attributes (id, user_id, campus_id, master_value_id, created_by)
@@ -1182,7 +1404,15 @@ router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) 
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
       user = store.users.find(u => u.id === userId);
-      userAttributes = store.user_attributes.filter(a => a.user_id === userId);
+      userAttributes = store.user_attributes.filter(a => a.user_id === userId).map(a => {
+        const mv = store.master_values.find(m => m.id === a.master_value_id);
+        return {
+          ...a,
+          master_type: mv ? mv.master_type : null,
+          master_name: mv ? mv.name : null,
+          master_code: mv ? mv.code : null
+        };
+      });
       if (user) {
         let camp = null;
         if (user.campus_id) camp = store.campuses.find(c => c.id === user.campus_id);
@@ -1219,7 +1449,7 @@ router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) 
       user = uRes.rows[0];
 
       const aRes = await db.query(`
-        SELECT ua.*, mv.master_type, mv.name as master_name
+        SELECT ua.*, mv.master_type, mv.name as master_name, mv.code as master_code
         FROM user_attributes ua
         JOIN master_values mv ON ua.master_value_id = mv.id
         WHERE ua.user_id = $1
@@ -1241,7 +1471,7 @@ router.get('/users/:id', auth.requirePermission('users.view'), async (req, res) 
 router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) => {
   try {
     const userId = req.params.id;
-    const { first_name, last_name, employee_code, phone, status = 'ACTIVE', campus_id, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [], password } = req.body;
+    const { first_name, last_name, employee_code, phone, status = 'ACTIVE', campus_id, class_teacher_status, department_id, designation_id, subject_ids = [], category_ids = [], class_ids = [], master_value_ids = [], password } = req.body;
 
     if (!first_name || !last_name) {
       return res.status(400).json({ error: 'First Name and Last Name are required' });
@@ -1251,6 +1481,9 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
 
     const displayName = `${first_name} ${last_name}`.trim();
     const now = new Date();
+    const isClassTeacher = Boolean(class_teacher_status);
+    const validClassIds = isClassTeacher ? (Array.isArray(class_ids) ? class_ids : []) : [];
+    const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids, ...validClassIds, ...(Array.isArray(master_value_ids) ? master_value_ids : [])].filter(Boolean);
 
     if (db.isMemoryFallback()) {
       const store = db.getMemoryStore();
@@ -1263,7 +1496,7 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
       user.employee_code = employee_code || user.employee_code;
       user.phone = phone || null;
       user.status = status;
-      user.class_teacher_status = Boolean(class_teacher_status);
+      user.class_teacher_status = isClassTeacher;
       if (campus_id !== undefined) user.campus_id = campus_id || null;
       user.updated_at = now;
 
@@ -1292,7 +1525,6 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
         }
 
         store.user_attributes = store.user_attributes.filter(a => a.user_id !== userId);
-        const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
         for (const mid of allMasterIds) {
           store.user_attributes.push({
             id: uuidv4(),
@@ -1311,12 +1543,12 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
           await client.query(`
             UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, campus_id = $8, password_hash = $9, updated_at = NOW()
             WHERE id = $10
-          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), campus_id || null, hash, userId]);
+          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, isClassTeacher, campus_id || null, hash, userId]);
         } else {
           await client.query(`
             UPDATE users SET first_name = $1, last_name = $2, display_name = $3, employee_code = $4, phone = $5, status = $6, class_teacher_status = $7, campus_id = $8, updated_at = NOW()
             WHERE id = $9
-          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, Boolean(class_teacher_status), campus_id || null, userId]);
+          `, [first_name, last_name, displayName, employee_code || null, phone || null, status, isClassTeacher, campus_id || null, userId]);
         }
 
         if (campus_id) {
@@ -1339,7 +1571,6 @@ router.put('/users/:id', auth.requirePermission('users.edit'), async (req, res) 
           }
 
           await client.query('DELETE FROM user_attributes WHERE user_id = $1', [userId]);
-          const allMasterIds = [department_id, designation_id, ...subject_ids, ...category_ids].filter(Boolean);
           for (const mid of allMasterIds) {
             await client.query(`
               INSERT INTO user_attributes (id, user_id, campus_id, master_value_id, created_by)
@@ -2245,6 +2476,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       questions = [],
       audience_rules = {},
       recipient_exclusions = [],
+      notification_emails = '',
       open_at,
       deadline_at,
       allow_late_submissions = true,
@@ -2291,6 +2523,7 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
         questions,
         audience_rules,
         recipient_exclusions,
+        notification_emails: notification_emails || '',
         status: 'DRAFT',
         open_at: openDate,
         deadline_at: deadline,
@@ -2308,9 +2541,9 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
       });
     } else {
       await db.query(`
-        INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, status, open_at, deadline_at, allow_late_submissions, allow_edit_submission, sort_order, created_by, recurrence_config, next_generation_at, recurrence_status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9, $10, $11, $12, $13, $14, $15, $16, $17)
-      `, [taskId, task_type, formattedTitle, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), openDate, deadline, Boolean(allow_late_submissions), Boolean(allow_edit_submission), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
+        INSERT INTO tasks (id, task_type, title, description, campus_ids, questions, audience_rules, recipient_exclusions, notification_emails, status, open_at, deadline_at, allow_late_submissions, allow_edit_submission, sort_order, created_by, recurrence_config, next_generation_at, recurrence_status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      `, [taskId, task_type, formattedTitle, description, JSON.stringify(campus_ids), JSON.stringify(questions), JSON.stringify(audience_rules), JSON.stringify(recipient_exclusions), notification_emails || '', openDate, deadline, Boolean(allow_late_submissions), Boolean(allow_edit_submission), Number(sort_order) || 0, req.user.id, recurrence_config ? JSON.stringify(recurrence_config) : null, nextGen, task_type === 'RECURRING_TEMPLATE' ? 'ACTIVE' : null]);
     }
 
     await services.logAudit({
@@ -2345,6 +2578,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
       questions,
       audience_rules,
       recipient_exclusions,
+      notification_emails,
       open_at,
       deadline_at,
       allow_late_submissions,
@@ -2372,6 +2606,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
     const updatedQuestions = questions !== undefined ? questions : (typeof task.questions === 'string' ? JSON.parse(task.questions) : task.questions);
     const updatedAudienceRules = audience_rules !== undefined ? audience_rules : (typeof task.audience_rules === 'string' ? JSON.parse(task.audience_rules) : task.audience_rules);
     const updatedExclusions = recipient_exclusions !== undefined ? recipient_exclusions : (typeof task.recipient_exclusions === 'string' ? JSON.parse(task.recipient_exclusions) : task.recipient_exclusions);
+    const updatedNotificationEmails = notification_emails !== undefined ? notification_emails : (task.notification_emails || '');
     const updatedOpenAt = open_at ? (services.parseDateIST(open_at) || task.open_at) : task.open_at;
     const updatedDeadlineAt = deadline_at ? (services.parseDateIST(deadline_at) || task.deadline_at) : task.deadline_at;
     const updatedAllowLate = allow_late_submissions !== undefined ? Boolean(allow_late_submissions) : (task.allow_late_submissions !== false);
@@ -2386,6 +2621,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
       task.questions = updatedQuestions;
       task.audience_rules = updatedAudienceRules;
       task.recipient_exclusions = updatedExclusions;
+      task.notification_emails = updatedNotificationEmails;
       task.open_at = updatedOpenAt;
       task.deadline_at = updatedDeadlineAt;
       task.allow_late_submissions = updatedAllowLate;
@@ -2402,14 +2638,15 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
             questions = $4,
             audience_rules = $5,
             recipient_exclusions = $6,
-            open_at = $7,
-            deadline_at = $8,
-            allow_late_submissions = $9,
-            allow_edit_submission = $10,
-            sort_order = $11,
-            status = $12,
+            notification_emails = $7,
+            open_at = $8,
+            deadline_at = $9,
+            allow_late_submissions = $10,
+            allow_edit_submission = $11,
+            sort_order = $12,
+            status = $13,
             updated_at = NOW()
-        WHERE id = $13
+        WHERE id = $14
       `, [
         title || null,
         description !== undefined ? description : null,
@@ -2417,6 +2654,7 @@ router.put('/tasks/:id', auth.requirePermission('tasks.create'), async (req, res
         JSON.stringify(updatedQuestions),
         JSON.stringify(updatedAudienceRules),
         JSON.stringify(updatedExclusions),
+        updatedNotificationEmails,
         updatedOpenAt,
         updatedDeadlineAt,
         updatedAllowLate,
@@ -3306,8 +3544,9 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
       // Collect master attributes to assign
       const deptName = (row['Department'] || '').toString().trim();
       const desigName = (row['Designation'] || '').toString().trim();
-      const subjsStr = (row['Subjects (Comma separated)'] || '').toString().trim();
-      const catsStr = (row['Categories (Comma separated)'] || '').toString().trim();
+      const subjsStr = (row['Subjects (Comma separated)'] || row['Subjects'] || '').toString().trim();
+      const catsStr = (row['Categories (Comma separated)'] || row['Categories'] || '').toString().trim();
+      const classesStr = (row['Classes (Comma separated)'] || row['Classes'] || row['Class'] || '').toString().trim();
 
       const matchedMasterIds = [];
       if (deptName) {
@@ -3327,6 +3566,12 @@ router.post('/import/commit', auth.requirePermission('imports.execute'), upload.
       if (catsStr) {
         catsStr.split(',').map(c => c.trim()).forEach(cName => {
           const mv = masterValues.find(m => m.master_type === 'CATEGORY' && m.name.toLowerCase() === cName.toLowerCase());
+          if (mv && !matchedMasterIds.includes(mv.id)) matchedMasterIds.push(mv.id);
+        });
+      }
+      if (classesStr) {
+        classesStr.split(',').map(c => c.trim()).forEach(cName => {
+          const mv = masterValues.find(m => m.master_type === 'CLASS' && m.name.toLowerCase() === cName.toLowerCase());
           if (mv && !matchedMasterIds.includes(mv.id)) matchedMasterIds.push(mv.id);
         });
       }

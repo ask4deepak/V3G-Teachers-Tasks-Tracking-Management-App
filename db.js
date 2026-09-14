@@ -20,6 +20,7 @@ const memoryStore = {
   campuses: [],
   users: [],
   roles: [],
+  master_categories: [],
   master_values: [],
   user_attributes: [],
   user_access: [],
@@ -124,6 +125,16 @@ async function seedMemoryStore() {
     }
   ];
 
+  // Default Master Categories
+  const catNow = new Date();
+  memoryStore.master_categories = [
+    { id: '11111111-0000-0000-0000-000000000001', name: 'Departments', code: 'DEPARTMENT', selection_mode: 'MULTI_SELECT', status: 'ACTIVE', show_on_dashboard: true, is_system: true, sort_order: 1, created_at: catNow, updated_at: catNow },
+    { id: '11111111-0000-0000-0000-000000000002', name: 'Designations', code: 'DESIGNATION', selection_mode: 'MULTI_SELECT', status: 'ACTIVE', show_on_dashboard: true, is_system: true, sort_order: 2, created_at: catNow, updated_at: catNow },
+    { id: '11111111-0000-0000-0000-000000000003', name: 'Subjects', code: 'SUBJECT', selection_mode: 'MULTI_SELECT', status: 'ACTIVE', show_on_dashboard: true, is_system: true, sort_order: 3, created_at: catNow, updated_at: catNow },
+    { id: '11111111-0000-0000-0000-000000000004', name: 'Categories', code: 'CATEGORY', selection_mode: 'SINGLE_SELECT', status: 'ACTIVE', show_on_dashboard: true, is_system: true, sort_order: 4, created_at: catNow, updated_at: catNow },
+    { id: '11111111-0000-0000-0000-000000000005', name: 'Classes / Sections', code: 'CLASS', selection_mode: 'MULTI_SELECT', status: 'ACTIVE', show_on_dashboard: true, is_system: true, sort_order: 5, created_at: catNow, updated_at: catNow }
+  ];
+
   // Master Values (Clean start)
   memoryStore.master_values = [];
 
@@ -175,6 +186,7 @@ async function seedMemoryStore() {
     { key: 'academic_session', value: '2026-2027', updated_at: now },
     { key: 'allow_late_submissions_default', value: 'true', updated_at: now },
     { key: 'allow_edit_submission_default', value: 'false', updated_at: now },
+    { key: 'task_notification_emails', value: '', updated_at: now },
     { key: 'google_client_id', value: process.env.GOOGLE_CLIENT_ID || '', updated_at: now },
     { key: 'google_client_secret', value: process.env.GOOGLE_CLIENT_SECRET || '', updated_at: now },
     { key: 'google_refresh_token', value: process.env.GOOGLE_REFRESH_TOKEN || '', updated_at: now }
@@ -210,6 +222,29 @@ async function initDb() {
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_late_submissions BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allow_edit_submission BOOLEAN NOT NULL DEFAULT FALSE;
 
+        CREATE TABLE IF NOT EXISTS master_categories (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          name VARCHAR(255) NOT NULL,
+          code VARCHAR(100) NOT NULL UNIQUE,
+          selection_mode VARCHAR(50) NOT NULL DEFAULT 'MULTI_SELECT',
+          status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+          show_on_dashboard BOOLEAN NOT NULL DEFAULT TRUE,
+          is_system BOOLEAN NOT NULL DEFAULT FALSE,
+          sort_order INT NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        INSERT INTO master_categories (id, name, code, selection_mode, status, show_on_dashboard, is_system, sort_order) VALUES
+        ('11111111-0000-0000-0000-000000000001', 'Departments', 'DEPARTMENT', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 1),
+        ('11111111-0000-0000-0000-000000000002', 'Designations', 'DESIGNATION', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 2),
+        ('11111111-0000-0000-0000-000000000003', 'Subjects', 'SUBJECT', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 3),
+        ('11111111-0000-0000-0000-000000000004', 'Categories', 'CATEGORY', 'SINGLE_SELECT', 'ACTIVE', TRUE, TRUE, 4),
+        ('11111111-0000-0000-0000-000000000005', 'Classes / Sections', 'CLASS', 'MULTI_SELECT', 'ACTIVE', TRUE, TRUE, 5)
+        ON CONFLICT (code) DO NOTHING;
+
+        ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notification_emails TEXT;
+
         CREATE TABLE IF NOT EXISTS system_settings (
           key VARCHAR(100) PRIMARY KEY,
           value TEXT NOT NULL,
@@ -238,7 +273,8 @@ async function initDb() {
         ['email_from_address', 'contact@srbps.com'],
         ['academic_session', '2026-2027'],
         ['allow_late_submissions_default', 'true'],
-        ['allow_edit_submission_default', 'false']
+        ['allow_edit_submission_default', 'false'],
+        ['task_notification_emails', '']
       ];
 
       for (const [sKey, sVal] of defaultSettings) {
@@ -413,6 +449,12 @@ function handleMemorySelect(table, sql, params) {
       const idx = extractParamIndex(whereClause, 'master_type');
       const val = params[idx - 1];
       if (val !== undefined) list = list.filter(r => r.master_type === val);
+    }
+    // Check for code = $1
+    if (whereClause.includes('code = $')) {
+      const idx = extractParamIndex(whereClause, 'code');
+      const val = params[idx - 1];
+      if (val !== undefined) list = list.filter(r => r.code === val);
     }
   }
 

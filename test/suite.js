@@ -722,6 +722,115 @@ West Coast Campus, WCC`;
     assert.ok(typeof campusNames === 'string' && campusNames.length > 0);
   });
 
+  console.log('\n--- Phase 13: Master Categories, Classes & Stakeholder Email Alerts ---');
+
+  await test('Master Categories supports custom categories, selection mode toggle & dashboard display', async () => {
+    const store = db.getMemoryStore();
+    
+    // 1. Initial categories exist
+    assert.ok(store.master_categories.length >= 5, 'Should have standard master categories initialized');
+    const classCat = store.master_categories.find(c => c.code === 'CLASS');
+    assert.ok(classCat, 'CLASS master category should exist');
+    assert.strictEqual(classCat.selection_mode, 'MULTI_SELECT');
+
+    // 2. Add a new custom category
+    const customCatId = 'cat-custom-' + Date.now();
+    store.master_categories.push({
+      id: customCatId,
+      name: 'Faculty Wings',
+      code: 'WING',
+      selection_mode: 'SINGLE_SELECT',
+      status: 'ACTIVE',
+      show_on_dashboard: true,
+      is_system: false,
+      sort_order: 10,
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+
+    const created = store.master_categories.find(c => c.id === customCatId);
+    assert.ok(created);
+    assert.strictEqual(created.code, 'WING');
+    assert.strictEqual(created.selection_mode, 'SINGLE_SELECT');
+
+    // 3. Toggle selection mode to MULTI_SELECT
+    created.selection_mode = 'MULTI_SELECT';
+    created.show_on_dashboard = false;
+    assert.strictEqual(created.selection_mode, 'MULTI_SELECT');
+    assert.strictEqual(created.show_on_dashboard, false);
+  });
+
+  await test('Classes can be assigned to multiple class teachers (co-class teachers)', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0];
+    
+    // Add 2 class master values
+    const class10A = { id: 'cls-10a-' + Date.now(), master_type: 'CLASS', name: 'Class 10-A', code: '10A', status: 'ACTIVE' };
+    const class10B = { id: 'cls-10b-' + Date.now(), master_type: 'CLASS', name: 'Class 10-B', code: '10B', status: 'ACTIVE' };
+    store.master_values.push(class10A, class10B);
+
+    // Create 2 teachers
+    const teacher1 = { id: 't-ct-1-' + Date.now(), first_name: 'Anjali', last_name: 'Sharma', display_name: 'Anjali Sharma', email: 'anjali@school.edu', user_type: 'TEACHER', status: 'ACTIVE', class_teacher_status: true };
+    const teacher2 = { id: 't-ct-2-' + Date.now(), first_name: 'Rohit', last_name: 'Verma', display_name: 'Rohit Verma', email: 'rohit@school.edu', user_type: 'TEACHER', status: 'ACTIVE', class_teacher_status: true };
+    store.users.push(teacher1, teacher2);
+
+    // Both teachers assigned to Class 10-A (Co-Class Teachers)
+    store.user_attributes.push(
+      { id: 'ua-1', user_id: teacher1.id, campus_id: campus.id, master_value_id: class10A.id },
+      { id: 'ua-2', user_id: teacher1.id, campus_id: campus.id, master_value_id: class10B.id }, // Teacher 1 also has 10B
+      { id: 'ua-3', user_id: teacher2.id, campus_id: campus.id, master_value_id: class10A.id }  // Teacher 2 also has 10A
+    );
+
+    // Resolve audience for Class 10-A
+    const audienceTeachers = await services.resolveTaskAudience([campus.id], {
+      classes: [class10A.id]
+    });
+
+    const teacherIds = audienceTeachers.map(t => t.id);
+    assert.ok(teacherIds.includes(teacher1.id), 'Teacher 1 should be resolved for Class 10-A');
+    assert.ok(teacherIds.includes(teacher2.id), 'Teacher 2 should be resolved for Class 10-A');
+  });
+
+  await test('Task publication dispatches stakeholder email notification to configured user-defined emails', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0];
+
+    // Configure system setting
+    await db.updateSystemSettings({
+      task_notification_emails: 'superintendent@institution.edu, head@institution.edu'
+    });
+
+    const taskId = 'task-email-test-' + Date.now();
+    const taskObj = {
+      id: taskId,
+      task_type: 'ONE_TIME',
+      title: 'Annual Performance Appraisal Submission',
+      description: 'Please submit your annual self-appraisal form before deadline.',
+      notification_emails: 'principal@institution.edu, coordinator@institution.edu',
+      campus_ids: [campus.id],
+      questions: [{ key: 'q1', label: 'Appraisal Report', type: 'short_text', required: true }],
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'DRAFT',
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000),
+      created_by: store.users[0].id,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    store.tasks.push(taskObj);
+
+    // Publish task
+    const pubResult = await services.publishTask(taskId, store.users[0].id);
+    assert.ok(pubResult.success);
+    assert.ok(pubResult.recipientCount > 0);
+
+    // Verify task is now published
+    const publishedTask = store.tasks.find(t => t.id === taskId);
+    assert.strictEqual(publishedTask.status, 'PUBLISHED');
+    assert.ok(publishedTask.published_at);
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

@@ -22,10 +22,6 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
   }
 
   const {
-    departments = [],
-    designations = [],
-    subjects = [],
-    categories = [],
     groups = [],
     class_teacher_status = null,
     specific_users = [],
@@ -39,10 +35,7 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
   let groupMemberships = [];
 
   const userCampusMap = new Map();
-  const userDeptMap = new Map();
-  const userDesigMap = new Map();
-  const userSubjMap = new Map();
-  const userCatMap = new Map();
+  const userMasterMap = new Map(); // userId -> Map<masterType, Set<masterValueId>>
   const userGroupMap = new Map();
 
   if (db.isMemoryFallback()) {
@@ -101,44 +94,23 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
     groupMemberships = gmRes.rows;
   }
 
-  // Pre-index user attributes and groups for fast lookup
+  // Pre-index user attributes dynamically by master_type
   for (const attr of userAttributes) {
     if (!campusIds.includes(attr.campus_id)) continue;
 
     if (!userCampusMap.has(attr.user_id)) userCampusMap.set(attr.user_id, new Set());
     userCampusMap.get(attr.user_id).add(attr.campus_id);
 
+    let mType = attr.master_type;
     if (db.isMemoryFallback()) {
       const mv = db.getMemoryStore().master_values.find(m => m.id === attr.master_value_id);
-      if (mv) {
-        if (mv.master_type === 'DEPARTMENT') {
-          if (!userDeptMap.has(attr.user_id)) userDeptMap.set(attr.user_id, new Set());
-          userDeptMap.get(attr.user_id).add(mv.id);
-        } else if (mv.master_type === 'DESIGNATION') {
-          if (!userDesigMap.has(attr.user_id)) userDesigMap.set(attr.user_id, new Set());
-          userDesigMap.get(attr.user_id).add(mv.id);
-        } else if (mv.master_type === 'SUBJECT') {
-          if (!userSubjMap.has(attr.user_id)) userSubjMap.set(attr.user_id, new Set());
-          userSubjMap.get(attr.user_id).add(mv.id);
-        } else if (mv.master_type === 'CATEGORY') {
-          if (!userCatMap.has(attr.user_id)) userCatMap.set(attr.user_id, new Set());
-          userCatMap.get(attr.user_id).add(mv.id);
-        }
-      }
-    } else {
-      if (attr.master_type === 'DEPARTMENT') {
-        if (!userDeptMap.has(attr.user_id)) userDeptMap.set(attr.user_id, new Set());
-        userDeptMap.get(attr.user_id).add(attr.master_value_id);
-      } else if (attr.master_type === 'DESIGNATION') {
-        if (!userDesigMap.has(attr.user_id)) userDesigMap.set(attr.user_id, new Set());
-        userDesigMap.get(attr.user_id).add(attr.master_value_id);
-      } else if (attr.master_type === 'SUBJECT') {
-        if (!userSubjMap.has(attr.user_id)) userSubjMap.set(attr.user_id, new Set());
-        userSubjMap.get(attr.user_id).add(attr.master_value_id);
-      } else if (attr.master_type === 'CATEGORY') {
-        if (!userCatMap.has(attr.user_id)) userCatMap.set(attr.user_id, new Set());
-        userCatMap.get(attr.user_id).add(attr.master_value_id);
-      }
+      if (mv) mType = mv.master_type;
+    }
+    if (mType) {
+      if (!userMasterMap.has(attr.user_id)) userMasterMap.set(attr.user_id, new Map());
+      const uMap = userMasterMap.get(attr.user_id);
+      if (!uMap.has(mType)) uMap.set(mType, new Set());
+      uMap.get(mType).add(attr.master_value_id);
     }
   }
 
@@ -146,6 +118,19 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
     if (!userGroupMap.has(gm.user_id)) userGroupMap.set(gm.user_id, new Set());
     userGroupMap.get(gm.user_id).add(gm.group_id);
   }
+
+  const standardAliasMap = {
+    departments: 'DEPARTMENT',
+    department: 'DEPARTMENT',
+    designations: 'DESIGNATION',
+    designation: 'DESIGNATION',
+    subjects: 'SUBJECT',
+    subject: 'SUBJECT',
+    categories: 'CATEGORY',
+    category: 'CATEGORY',
+    classes: 'CLASS',
+    class: 'CLASS'
+  };
 
   const eligibleTeachers = [];
 
@@ -164,37 +149,25 @@ async function resolveTaskAudience(campusIds, audienceRules = {}, recipientExclu
     // Filter Category checks (AND or OR across categories, OR within each category)
     const activeFilters = [];
 
-    // 1. Department
-    if (departments && departments.length > 0) {
-      const userDepts = userDeptMap.get(userId) || new Set();
-      activeFilters.push(departments.some(d => userDepts.has(d)));
+    // Dynamically evaluate all audienceRules entries
+    for (const [key, val] of Object.entries(audienceRules || {})) {
+      if (!val || (Array.isArray(val) && val.length === 0)) continue;
+      if (key === 'groups' || key === 'class_teacher_status' || key === 'specific_users' || key === 'operator') continue;
+      
+      const targetType = standardAliasMap[key] || standardAliasMap[key.toLowerCase()] || key.toUpperCase();
+      const selectedIds = Array.isArray(val) ? val : [val];
+      const uMap = userMasterMap.get(userId);
+      const userVals = (uMap && uMap.get(targetType)) || new Set();
+      activeFilters.push(selectedIds.some(id => userVals.has(id)));
     }
 
-    // 2. Designation
-    if (designations && designations.length > 0) {
-      const userDesigs = userDesigMap.get(userId) || new Set();
-      activeFilters.push(designations.some(d => userDesigs.has(d)));
-    }
-
-    // 3. Subject
-    if (subjects && subjects.length > 0) {
-      const userSubs = userSubjMap.get(userId) || new Set();
-      activeFilters.push(subjects.some(s => userSubs.has(s)));
-    }
-
-    // 4. Category
-    if (categories && categories.length > 0) {
-      const userCats = userCatMap.get(userId) || new Set();
-      activeFilters.push(categories.some(c => userCats.has(c)));
-    }
-
-    // 5. Group
+    // Group filter
     if (groups && groups.length > 0) {
       const userGrps = userGroupMap.get(userId) || new Set();
       activeFilters.push(groups.some(g => userGrps.has(g)));
     }
 
-    // 6. Class Teacher Status
+    // Class Teacher Status filter
     if (class_teacher_status !== null && class_teacher_status !== undefined && class_teacher_status !== '') {
       const reqBool = class_teacher_status === true || class_teacher_status === 'true' || class_teacher_status === 'yes';
       activeFilters.push(Boolean(teacher.class_teacher_status) === reqBool);
@@ -342,6 +315,20 @@ async function publishTask(taskId, publishingUserId, reqIp = null) {
       } catch (e) {
         console.warn(`[Email Notification Failed] for ${recipient.email}: ${e.message}`);
       }
+    }
+
+    // Send task creation alert to authorized user-defined stakeholder emails
+    try {
+      let creatorUser = null;
+      if (db.isMemoryFallback()) {
+        creatorUser = db.getMemoryStore().users.find(u => u.id === (task.created_by || publishingUserId));
+      } else {
+        const cRes = await db.query('SELECT * FROM users WHERE id = $1', [task.created_by || publishingUserId]);
+        creatorUser = cRes.rows[0];
+      }
+      await sendTaskCreatedStakeholdersEmail(task, creatorUser, activeRecipients, deadline);
+    } catch (e) {
+      console.warn(`[Stakeholder Task Creation Email Alert Failed]: ${e.message}`);
     }
   });
 
@@ -982,6 +969,86 @@ async function sendTaskReminderEmail(teacher, task, deadline) {
   });
 }
 
+async function sendTaskCreatedStakeholdersEmail(task, creatorUser, activeRecipients = [], deadline = null) {
+  try {
+    const settings = await db.getSystemSettings();
+    const systemEmails = (settings.task_notification_emails || process.env.TASK_NOTIFICATION_EMAILS || '')
+      .split(/[,;]/)
+      .map(e => e.trim())
+      .filter(e => e.length > 0 && e.includes('@'));
+
+    const taskEmails = (task.notification_emails || '')
+      .split(/[,;]/)
+      .map(e => e.trim())
+      .filter(e => e.length > 0 && e.includes('@'));
+
+    const allEmails = Array.from(new Set([...systemEmails, ...taskEmails]));
+
+    if (allEmails.length === 0) return { skipped: true, reason: 'No stakeholder emails configured' };
+
+    const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
+    const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
+    const deadlineStr = deadline ? new Date(deadline).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : 'N/A';
+    const creatorName = creatorUser ? `${creatorUser.display_name || creatorUser.first_name + ' ' + (creatorUser.last_name || '')} (${creatorUser.email})` : 'Administrator';
+
+    const subject = `[Task Alert] New Task Created: ${task.title} (${activeRecipients.length} Assignees)`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 24px; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff;">
+        <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
+          <h2 style="color: #1d4ed8; margin: 0; font-size: 20px;">Institutional Task Notification</h2>
+          <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Automated alert for user-defined authorized stakeholders</p>
+        </div>
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px;">
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 0; font-weight: bold; color: #475569; width: 150px;">Task Title:</td>
+            <td style="padding: 8px 0; color: #0f172a; font-weight: 600;">${task.title}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 0; font-weight: bold; color: #475569;">Created By:</td>
+            <td style="padding: 8px 0; color: #334155;">${creatorName}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 0; font-weight: bold; color: #475569;">Submission Deadline:</td>
+            <td style="padding: 8px 0; color: #dc2626; font-weight: bold;">${deadlineStr} (IST)</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 0; font-weight: bold; color: #475569;">Assigned Recipients:</td>
+            <td style="padding: 8px 0; color: #2563eb; font-weight: bold;">${activeRecipients.length} Teacher(s)</td>
+          </tr>
+        </table>
+
+        ${task.description ? `
+        <div style="background-color: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px 16px; margin-bottom: 20px; border-radius: 0 6px 6px 0;">
+          <p style="margin: 0 0 4px 0; font-weight: bold; color: #334155; font-size: 13px;">Task Instructions & Description:</p>
+          <div style="color: #475569; font-size: 14px; white-space: pre-wrap;">${task.description}</div>
+        </div>
+        ` : ''}
+
+        <div style="text-align: center; margin: 25px 0 15px 0;">
+          <a href="${baseUrl}" style="background-color: #2563eb; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 14px;">View in Tasks Portal</a>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0 12px 0;" />
+        <p style="font-size: 11px; color: #94a3b8; margin: 0; text-align: center;">
+          Sent to authorized stakeholder emails: ${allEmails.join(', ')}
+        </p>
+      </div>
+    `;
+
+    return await dispatchMail({
+      from,
+      to: allEmails.join(','),
+      subject,
+      html
+    });
+  } catch (err) {
+    console.error('[sendTaskCreatedStakeholdersEmail Error]', err);
+    throw err;
+  }
+}
+
 async function sendGroupJoinRequestEmail(approvers, applicant, group, campusName) {
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'tasks@institution.edu';
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
@@ -1153,6 +1220,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
           const desigNames = getAttrNames('DESIGNATION');
           const subjNames = getAttrNames('SUBJECT');
           const catNames = getAttrNames('CATEGORY');
+          const classNames = getAttrNames('CLASS');
 
           return {
             'Email (Key)': t.email,
@@ -1166,6 +1234,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
             'Subjects (Comma separated)': subjNames.join(', '),
             'Categories (Comma separated)': catNames.join(', '),
             'Class Teacher (Yes/No)': t.class_teacher_status ? 'Yes' : 'No',
+            'Classes (Comma separated)': classNames.join(', '),
             'Status (ACTIVE/INACTIVE)': t.status || 'ACTIVE'
           };
         });
@@ -1184,7 +1253,8 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
             (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DEPARTMENT' LIMIT 1) as department_name,
             (SELECT mv.name FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'DESIGNATION' LIMIT 1) as designation_name,
             (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'SUBJECT') as subjects,
-            (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY') as categories
+            (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'CATEGORY') as categories,
+            (SELECT string_agg(mv.name, ', ') FROM user_attributes ua JOIN master_values mv ON ua.master_value_id = mv.id WHERE ua.user_id = u.id AND mv.master_type = 'CLASS') as classes
           FROM users u
           LEFT JOIN LATERAL (
             SELECT c1.name, ua1.campus_id FROM user_attributes ua1 JOIN campuses c1 ON ua1.campus_id = c1.id WHERE ua1.user_id = u.id AND ua1.campus_id IS NOT NULL LIMIT 1
@@ -1214,6 +1284,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
           'Subjects (Comma separated)': t.subjects || '',
           'Categories (Comma separated)': t.categories || '',
           'Class Teacher (Yes/No)': t.class_teacher_status ? 'Yes' : 'No',
+          'Classes (Comma separated)': t.classes || '',
           'Status (ACTIVE/INACTIVE)': t.status || 'ACTIVE'
         }));
       }
@@ -1242,6 +1313,7 @@ async function generateImportTemplate(mode = 'NEW', dataset = 'users', userConte
           'Subjects (Comma separated)': 'Mathematics, Physics',
           'Categories (Comma separated)': 'Middle Wing, Exam Committee',
           'Class Teacher (Yes/No)': 'Yes',
+          'Classes (Comma separated)': 'Class 10-A, Class 10-B',
           'Status (ACTIVE/INACTIVE)': 'ACTIVE'
         }
       ];
@@ -1281,6 +1353,7 @@ module.exports = {
   getEffectiveEmailConfig,
   sendTaskAssignedEmail,
   sendTaskReminderEmail,
+  sendTaskCreatedStakeholdersEmail,
   sendGroupJoinRequestEmail,
   sendGroupDecisionEmail,
   sendTestEmail,

@@ -43,7 +43,21 @@ CREATE TABLE IF NOT EXISTS roles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 4. Master Values
+-- 4. Master Categories / Types
+CREATE TABLE IF NOT EXISTS master_categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    code VARCHAR(100) NOT NULL UNIQUE,
+    selection_mode VARCHAR(50) NOT NULL DEFAULT 'MULTI_SELECT', -- 'MULTI_SELECT', 'SINGLE_SELECT'
+    status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE', 'INACTIVE'
+    show_on_dashboard BOOLEAN NOT NULL DEFAULT TRUE,
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 5. Master Values
 CREATE TABLE IF NOT EXISTS master_values (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     master_type VARCHAR(50) NOT NULL, -- 'DEPARTMENT', 'DESIGNATION', 'SUBJECT', 'CATEGORY'

@@ -1495,21 +1495,28 @@ async function requestGroupJoin(groupId, groupName) {
 
 // Teacher My Profile
 async function renderMyProfile(container) {
-  const [profileData, campuses, depts, desigs, subjs, cats] = await Promise.all([
+  const [profileData, campuses, masterCategories, allMasters] = await Promise.all([
     api('/profile'),
     api('/campuses'),
-    api('/masters?master_type=DEPARTMENT'),
-    api('/masters?master_type=DESIGNATION'),
-    api('/masters?master_type=SUBJECT'),
-    api('/masters?master_type=CATEGORY')
+    api('/master-categories?status=ACTIVE'),
+    api('/masters?status=ACTIVE')
   ]);
 
   const { user, attributes } = profileData;
-  const userDeptId = attributes.find(a => a.master_type === 'DEPARTMENT')?.master_value_id;
-  const userDesigId = attributes.find(a => a.master_type === 'DESIGNATION')?.master_value_id;
-  const userSubjectIds = attributes.filter(a => a.master_type === 'SUBJECT').map(a => a.master_value_id);
-  const userCategoryIds = attributes.filter(a => a.master_type === 'CATEGORY').map(a => a.master_value_id);
-  const currentCampusId = attributes[0]?.campus_id || (campuses[0] ? campuses[0].id : '');
+  const userAttrIds = new Set((attributes || []).map(a => a.master_value_id));
+  const currentCampusId = user.campus_id || (attributes && attributes[0]?.campus_id) || (campuses[0] ? campuses[0].id : '');
+
+  // Separate categories
+  const categoriesList = masterCategories && masterCategories.length > 0 ? masterCategories : [
+    { code: 'DEPARTMENT', name: 'Departments', selection_mode: 'SINGLE_SELECT' },
+    { code: 'DESIGNATION', name: 'Designations', selection_mode: 'SINGLE_SELECT' },
+    { code: 'SUBJECT', name: 'Subjects', selection_mode: 'MULTI_SELECT' },
+    { code: 'CATEGORY', name: 'Categories', selection_mode: 'MULTI_SELECT' },
+    { code: 'CLASS', name: 'Classes / Sections', selection_mode: 'MULTI_SELECT' }
+  ];
+
+  const classMasters = (allMasters || []).filter(m => (m.master_type || '').toUpperCase() === 'CLASS');
+  const otherCats = categoriesList.filter(c => c.code.toUpperCase() !== 'CLASS');
 
   container.innerHTML = `
     <div class="card" style="max-width: 800px; margin: 0 auto;">
@@ -1540,56 +1547,71 @@ async function renderMyProfile(container) {
             </select>
           </div>
 
-          <div class="form-group">
-            <label>Department</label>
-            <select name="department_id" class="form-select">
-              <option value="">-- Select Department --</option>
-              ${depts.map(d => `<option value="${d.id}" ${d.id === userDeptId ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
-            </select>
-          </div>
+          <!-- Dynamic Master Categories -->
+          ${otherCats.map(cat => {
+            const catMasters = (allMasters || []).filter(m => (m.master_type || '').toUpperCase() === cat.code.toUpperCase());
+            const isSingle = cat.selection_mode === 'SINGLE_SELECT';
+            
+            if (isSingle) {
+              const selectedVal = catMasters.find(m => userAttrIds.has(m.id));
+              return `
+                <div class="form-group">
+                  <label>${escapeHtml(cat.name)}</label>
+                  <select name="dyn_single_${cat.code}" class="form-select">
+                    <option value="">-- Select ${escapeHtml(cat.name)} --</option>
+                    ${catMasters.map(m => `
+                      <option value="${m.id}" ${selectedVal && selectedVal.id === m.id ? 'selected' : ''}>
+                        ${escapeHtml(m.name)}
+                      </option>
+                    `).join('')}
+                  </select>
+                </div>
+              `;
+            } else {
+              return `
+                <div class="form-group">
+                  <label>${escapeHtml(cat.name)} (Multi-Select)</label>
+                  <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-top: 6px; max-height: 140px; overflow-y: auto; background: var(--bg-surface-secondary, var(--border-subtle)); padding: 10px; border-radius: var(--radius-md);">
+                    ${catMasters.map(m => `
+                      <label class="choice-tile" style="padding: 6px 10px; font-size: 0.85rem;">
+                        <input type="checkbox" name="dyn_multi_${cat.code}" value="${m.id}" ${userAttrIds.has(m.id) ? 'checked' : ''} />
+                        <span>${escapeHtml(m.name)}</span>
+                      </label>
+                    `).join('')}
+                    ${catMasters.length === 0 ? '<span style="color:var(--text-muted); font-size:0.8rem;">No options defined.</span>' : ''}
+                  </div>
+                </div>
+              `;
+            }
+          }).join('')}
 
-          <div class="form-group">
-            <label>Designation</label>
-            <select name="designation_id" class="form-select">
-              <option value="">-- Select Designation --</option>
-              ${desigs.map(d => `<option value="${d.id}" ${d.id === userDesigId ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label>Subjects Taught (Multi-Select)</label>
-            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 6px;">
-              ${subjs.map(s => `
-                <label class="checkbox-label">
-                  <input type="checkbox" name="subject_ids" value="${s.id}" ${userSubjectIds.includes(s.id) ? 'checked' : ''} />
-                  ${escapeHtml(s.name)}
-                </label>
-              `).join('')}
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>Faculty Categories / Wings (Multi-Select)</label>
-            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 6px;">
-              ${cats.map(c => `
-                <label class="checkbox-label">
-                  <input type="checkbox" name="category_ids" value="${c.id}" ${userCategoryIds.includes(c.id) ? 'checked' : ''} />
-                  ${escapeHtml(c.name)}
-                </label>
-              `).join('')}
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="checkbox-label" style="margin-top: 10px;">
-              <input type="checkbox" name="class_teacher_status" value="true" ${user.class_teacher_status ? 'checked' : ''} />
+          <!-- Class Teacher Appointment & Class Multi-Select -->
+          <div class="form-group" style="margin-top: 14px;">
+            <label class="checkbox-label">
+              <input type="checkbox" name="class_teacher_status" id="profile-ct-check" value="true" ${user.class_teacher_status ? 'checked' : ''} onchange="document.getElementById('profile-class-picker').style.display = this.checked ? 'block' : 'none';" />
               <strong>Currently Appointed as Class Teacher</strong>
             </label>
           </div>
 
-          <div class="form-group">
+          <div id="profile-class-picker" class="form-group" style="display: ${user.class_teacher_status ? 'block' : 'none'}; background: var(--bg-surface-secondary, var(--border-subtle)); padding: 14px; border-radius: var(--radius-md); border-left: 4px solid var(--primary);">
+            <label style="font-weight:700; color:var(--primary); margin-bottom: 6px; display:block;">
+              <i class="fa-solid fa-chalkboard-user"></i> Assigned Class(es) / Section(s) (Multi-Select)
+            </label>
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; max-height: 120px; overflow-y: auto;">
+              ${classMasters.map(cl => `
+                <label class="choice-tile" style="padding: 6px 10px; font-size: 0.84rem;">
+                  <input type="checkbox" name="class_ids" value="${cl.id}" ${userAttrIds.has(cl.id) ? 'checked' : ''} />
+                  <span>${escapeHtml(cl.name)}</span>
+                </label>
+              `).join('')}
+              ${classMasters.length === 0 ? '<span style="color:var(--text-muted); font-size:0.8rem;">No classes found in Master Data.</span>' : ''}
+            </div>
+            <small style="color:var(--text-muted); font-size:0.75rem; margin-top:4px; display:block;">Select all classes where you are assigned as class teacher or co-class teacher.</small>
+          </div>
+
+          <div class="form-group" style="margin-top: 14px;">
             <label>Contact Phone Number</label>
-            <input type="text" name="phone" class="form-input" value="${escapeHtml(user.phone || '')}" placeholder="+1 555-0100" />
+            <input type="text" name="phone" class="form-input" value="${escapeHtml(user.phone || '')}" placeholder="+91 9876543210" />
           </div>
 
           <div style="margin-top: 24px;">
@@ -1640,12 +1662,32 @@ async function handleProfileSubmit(event) {
   const form = event.target;
   const formData = new FormData(form);
 
+  const masterValueIds = [];
+  let departmentId = null;
+  let designationId = null;
+  const subjectIds = [];
+  const categoryIds = [];
+
+  for (const [key, val] of formData.entries()) {
+    if (!val) continue;
+    if (key.startsWith('dyn_single_') || key.startsWith('dyn_multi_')) {
+      const catCode = key.replace(/^dyn_(single|multi)_/, '');
+      if (catCode === 'DEPARTMENT') departmentId = val;
+      else if (catCode === 'DESIGNATION') designationId = val;
+      else if (catCode === 'SUBJECT') subjectIds.push(val);
+      else if (catCode === 'CATEGORY') categoryIds.push(val);
+      else masterValueIds.push(val);
+    }
+  }
+
   const payload = {
     campus_id: formData.get('campus_id'),
-    department_id: formData.get('department_id') || null,
-    designation_id: formData.get('designation_id') || null,
-    subject_ids: formData.getAll('subject_ids'),
-    category_ids: formData.getAll('category_ids'),
+    department_id: departmentId,
+    designation_id: designationId,
+    subject_ids: subjectIds,
+    category_ids: categoryIds,
+    class_ids: formData.getAll('class_ids'),
+    master_value_ids: masterValueIds,
     class_teacher_status: formData.get('class_teacher_status') === 'true',
     phone: formData.get('phone')
   };
@@ -1692,15 +1734,17 @@ async function handlePasswordReset(event) {
 
 async function renderAdminDashboard(container) {
   try {
-    const [allTasksRaw, allTeachersRaw, requestsRaw] = await Promise.all([
+    const [allTasksRaw, allTeachersRaw, requestsRaw, masterCategoriesRaw] = await Promise.all([
       api('/tasks').catch(() => []),
       api('/users?user_type=TEACHER').catch(() => []),
-      hasPermission('groups.approve_requests') ? api('/group-requests/pending-count').catch(() => ({ count: 0 })) : Promise.resolve({ count: 0 })
+      hasPermission('groups.approve_requests') ? api('/group-requests/pending-count').catch(() => ({ count: 0 })) : Promise.resolve({ count: 0 }),
+      api('/master-categories?status=ACTIVE').catch(() => [])
     ]);
 
     const allTasks = Array.isArray(allTasksRaw) ? allTasksRaw : [];
     const allTeachers = Array.isArray(allTeachersRaw) ? allTeachersRaw : [];
     const requests = requestsRaw && typeof requestsRaw === 'object' ? requestsRaw : { count: 0 };
+    const masterCategories = Array.isArray(masterCategoriesRaw) ? masterCategoriesRaw : [];
 
     // Apply active campus filter if selected
     const activeCampusId = state.selectedCampusId;
@@ -1727,257 +1771,232 @@ async function renderAdminDashboard(container) {
     const firstName = (state.user ? state.user.first_name : '') || 'Administrator';
     const todayDateString = new Date().toISOString().split('T')[0];
 
-  // Compute Teacher Distribution Breakdowns
-  const deptMap = {};
-  const desigMap = {};
-  const catMap = {};
-  const subjMap = {};
-  const grpMap = {};
-  const classTeachers = [];
-  const nonClassTeachers = [];
+    // Compute Teacher Distribution Breakdowns Dynamically for all Categories
+    const dynamicCategoryMaps = {}; // catCode -> { valName -> [teachers] }
+    const classTeachers = [];
+    const nonClassTeachers = [];
+    const classMap = {}; // Class Name -> [teachers]
+    const grpMap = {};
 
-  teachers.forEach(u => {
-    // Class teacher
-    const isCt = u.class_teacher_status === true || u.class_teacher_status === 'Yes' || u.class_teacher_status === 'true';
-    if (isCt) classTeachers.push(u);
-    else nonClassTeachers.push(u);
+    masterCategories.forEach(cat => {
+      dynamicCategoryMaps[cat.code] = {};
+    });
 
-    // Departments
-    if (u.department_names) {
-      u.department_names.split(',').map(s => s.trim()).filter(Boolean).forEach(d => {
-        deptMap[d] = deptMap[d] || [];
-        deptMap[d].push(u);
+    teachers.forEach(u => {
+      // Class teacher
+      const isCt = u.class_teacher_status === true || u.class_teacher_status === 'Yes' || u.class_teacher_status === 'true';
+      if (isCt) classTeachers.push(u);
+      else nonClassTeachers.push(u);
+
+      // Classes
+      if (u.class_names) {
+        u.class_names.split(',').map(s => s.trim()).filter(Boolean).forEach(cn => {
+          classMap[cn] = classMap[cn] || [];
+          classMap[cn].push(u);
+        });
+      }
+
+      // Dynamic Master Categories
+      const uAttrs = u.attributes || [];
+      masterCategories.forEach(cat => {
+        const catCode = cat.code;
+        dynamicCategoryMaps[catCode] = dynamicCategoryMaps[catCode] || {};
+        
+        let values = [];
+        const matchingAttrs = uAttrs.filter(a => a.master_type === catCode);
+        if (matchingAttrs.length > 0) {
+          values = matchingAttrs.map(a => a.name);
+        } else if (catCode === 'DEPARTMENT' && u.department_names) {
+          values = u.department_names.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (catCode === 'DESIGNATION' && u.designation_name) {
+          values = u.designation_name.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (catCode === 'SUBJECT' && u.subject_names) {
+          values = u.subject_names.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (catCode === 'CATEGORY' && u.category_names) {
+          values = u.category_names.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (catCode === 'CLASS' && u.class_names) {
+          values = u.class_names.split(',').map(s => s.trim()).filter(Boolean);
+        }
+
+        values.forEach(v => {
+          dynamicCategoryMaps[catCode][v] = dynamicCategoryMaps[catCode][v] || [];
+          dynamicCategoryMaps[catCode][v].push(u);
+        });
       });
-    }
 
-    // Designations
-    if (u.designation_name) {
-      u.designation_name.split(',').map(s => s.trim()).filter(Boolean).forEach(d => {
-        desigMap[d] = desigMap[d] || [];
-        desigMap[d].push(u);
-      });
-    }
+      // Groups
+      if (u.group_names) {
+        u.group_names.split(',').map(g => g.trim()).filter(Boolean).forEach(g => {
+          grpMap[g] = grpMap[g] || [];
+          grpMap[g].push(u);
+        });
+      }
+    });
 
-    // Categories
-    if (u.category_names) {
-      u.category_names.split(',').map(s => s.trim()).filter(Boolean).forEach(c => {
-        catMap[c] = catMap[c] || [];
-        catMap[c].push(u);
-      });
-    }
+    // Store transient dataset for drilldown clicks
+    window.__dashboardTeacherData = {
+      all: teachers,
+      classTeachers,
+      nonClassTeachers,
+      classes: classMap,
+      groups: grpMap,
+      ...dynamicCategoryMaps
+    };
 
-    // Subjects
-    if (u.subject_names) {
-      u.subject_names.split(',').map(s => s.trim()).filter(Boolean).forEach(s => {
-        subjMap[s] = subjMap[s] || [];
-        subjMap[s].push(u);
-      });
-    }
+    const dashboardVisibleCategories = masterCategories.filter(c => c.show_on_dashboard !== false && c.code !== 'CLASS');
 
-    // Groups
-    if (u.group_names) {
-      u.group_names.split(',').map(g => g.trim()).filter(Boolean).forEach(g => {
-        grpMap[g] = grpMap[g] || [];
-        grpMap[g].push(u);
-      });
-    }
-  });
-
-  // Store transient dataset for drilldown clicks
-  window.__dashboardTeacherData = {
-    all: teachers,
-    departments: deptMap,
-    designations: desigMap,
-    categories: catMap,
-    subjects: subjMap,
-    groups: grpMap,
-    classTeachers,
-    nonClassTeachers
-  };
-
-  container.innerHTML = `
-    <!-- Control Room Hero Header -->
-    <div class="dashboard-hero-header">
-      <div>
-        <span class="section-kicker">TODAY'S CONTROL ROOM</span>
-        <h1 class="hero-title">Good morning, ${escapeHtml(firstName)}</h1>
-      </div>
-      <div class="hero-actions-right">
-        <div class="date-filter-control hide-sm">
-          <input type="date" value="${todayDateString}" id="admin-dashboard-date-filter" />
-        </div>
-        ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN' || state.user.user_type === 'ADMIN') ? `
-          <button class="btn btn-secondary btn-sm" onclick="openTestEmailModal()">
-            <i class="fa-solid fa-paper-plane"></i> <span class="hide-sm">Test SMTP</span>
-          </button>
-        ` : ''}
-        ${hasPermission('tasks.create') ? `
-          <button class="btn btn-accent btn-sm" onclick="navigateTo('task-builder')">
-            <i class="fa-solid fa-plus"></i> Create Task
-          </button>
-        ` : ''}
-      </div>
-    </div>
-
-    <!-- Live Operational View Banner -->
-    <div class="live-banner">
-      <div class="live-banner-left">
-        <span class="live-dot-pulse"></span>
+    container.innerHTML = `
+      <!-- Control Room Hero Header -->
+      <div class="dashboard-hero-header">
         <div>
-          <div class="live-banner-title">Live operational view</div>
-          <div class="live-banner-sub">Focus on exceptions. Everything else stays quietly in order.</div>
+          <span class="section-kicker">TODAY'S CONTROL ROOM</span>
+          <h1 class="hero-title">Good morning, ${escapeHtml(firstName)}</h1>
         </div>
-      </div>
-      <div class="live-banner-date hide-sm">${todayDateString}</div>
-    </div>
-
-    <!-- Metric KPI Grid (All clickable) -->
-    <div class="kpi-grid">
-      <div class="kpi-card" onclick="navigateTo('tasks')" title="Click to view all tasks" style="cursor:pointer;">
-        <div class="kpi-title">Active task operations</div>
-        <div class="kpi-value">${activeTasks.length}/${tasks.length}</div>
-        <div class="kpi-subtext">Active institutional workflows</div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('reports-task-wise')" title="Click to view submissions report" style="cursor:pointer;">
-        <div class="kpi-title">Faculty submissions</div>
-        <div class="kpi-value">${totalSubmitted}/${totalAssigned || 0}</div>
-        <div class="kpi-subtext">Across active teachers</div>
-      </div>
-      <div class="kpi-card ${totalOverdue > 0 ? 'kpi-card-highlight' : ''}" onclick="navigateTo('reports-task-wise')" title="Click to view overdue tasks" style="cursor:pointer;">
-        <div class="kpi-title">Overdue / Exceptions</div>
-        <div class="kpi-value">${totalOverdue}</div>
-        <div class="kpi-subtext">${totalOverdue > 0 ? 'Action items require follow-up' : 'Zero exceptions recorded'}</div>
-      </div>
-      <div class="kpi-card" onclick="navigateTo('group-requests')" title="Click to review group requests" style="cursor:pointer;">
-        <div class="kpi-title">Pending group requests</div>
-        <div class="kpi-value">${requests.count}</div>
-        <div class="kpi-subtext">Faculty awaiting approval</div>
-      </div>
-    </div>
-
-    <!-- Comprehensive Faculty Distribution & Summary Breakdown Card -->
-    <div class="dashboard-breakdown-card">
-      <div class="dashboard-breakdown-header">
-        <div>
-          <div class="dashboard-breakdown-title">
-            <i class="fa-solid fa-users text-primary"></i> Faculty Demographics & Breakdown
+        <div class="hero-actions-right">
+          <div class="date-filter-control hide-sm">
+            <input type="date" value="${todayDateString}" id="admin-dashboard-date-filter" />
           </div>
-          <span style="font-size:0.84rem; color:var(--text-muted);">
-            Active Campus Scope: <strong>${escapeHtml(getCampusNameForId(state.selectedCampusId))}</strong> • Click any group to view teacher list
-          </span>
-        </div>
-        <div>
-          <button class="breakdown-chip breakdown-chip-highlight" onclick="openTeacherListBreakdownModal('All Campus Faculty Members', 'all')" title="View complete teacher directory for active campus">
-            <i class="fa-solid fa-graduation-cap"></i> Total Teachers
-            <span class="breakdown-chip-count">${teachers.length}</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="dashboard-breakdown-grid">
-        <!-- Class Teacher Role Status -->
-        <div class="breakdown-group-card">
-          <div class="breakdown-group-title">
-            <i class="fa-solid fa-chalkboard-user text-primary"></i> Class Teacher Status
-          </div>
-          <div class="breakdown-chips-wrap">
-            <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Class Teachers', 'classTeachers')">
-              <span>Class Teachers</span>
-              <span class="breakdown-chip-count">${classTeachers.length}</span>
+          ${(state.user.isSuperAdmin || state.user.user_type === 'SUPER_ADMIN' || state.user.user_type === 'ADMIN') ? `
+            <button class="btn btn-secondary btn-sm" onclick="openTestEmailModal()">
+              <i class="fa-solid fa-paper-plane"></i> <span class="hide-sm">Test SMTP</span>
             </button>
-            <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Non-Class Teachers', 'nonClassTeachers')">
-              <span>Non-Class Teachers</span>
-              <span class="breakdown-chip-count">${nonClassTeachers.length}</span>
+          ` : ''}
+          ${hasPermission('tasks.create') ? `
+            <button class="btn btn-accent btn-sm" onclick="navigateTo('task-builder')">
+              <i class="fa-solid fa-plus"></i> Create Task
+            </button>
+          ` : ''}
+        </div>
+      </div>
+
+      <!-- Live Operational View Banner -->
+      <div class="live-banner">
+        <div class="live-banner-left">
+          <span class="live-dot-pulse"></span>
+          <div>
+            <div class="live-banner-title">Live operational view</div>
+            <div class="live-banner-sub">Focus on exceptions. Everything else stays quietly in order.</div>
+          </div>
+        </div>
+        <div class="live-banner-date hide-sm">${todayDateString}</div>
+      </div>
+
+      <!-- Metric KPI Grid (All clickable) -->
+      <div class="kpi-grid">
+        <div class="kpi-card" onclick="navigateTo('tasks')" title="Click to view all tasks" style="cursor:pointer;">
+          <div class="kpi-title">Active task operations</div>
+          <div class="kpi-value">${activeTasks.length}/${tasks.length}</div>
+          <div class="kpi-subtext">Active institutional workflows</div>
+        </div>
+        <div class="kpi-card" onclick="navigateTo('reports-task-wise')" title="Click to view submissions report" style="cursor:pointer;">
+          <div class="kpi-title">Faculty submissions</div>
+          <div class="kpi-value">${totalSubmitted}/${totalAssigned || 0}</div>
+          <div class="kpi-subtext">Across active teachers</div>
+        </div>
+        <div class="kpi-card ${totalOverdue > 0 ? 'kpi-card-highlight' : ''}" onclick="navigateTo('reports-task-wise')" title="Click to view overdue tasks" style="cursor:pointer;">
+          <div class="kpi-title">Overdue / Exceptions</div>
+          <div class="kpi-value">${totalOverdue}</div>
+          <div class="kpi-subtext">${totalOverdue > 0 ? 'Action items require follow-up' : 'Zero exceptions recorded'}</div>
+        </div>
+        <div class="kpi-card" onclick="navigateTo('group-requests')" title="Click to review group requests" style="cursor:pointer;">
+          <div class="kpi-title">Pending group requests</div>
+          <div class="kpi-value">${requests.count}</div>
+          <div class="kpi-subtext">Faculty awaiting approval</div>
+        </div>
+      </div>
+
+      <!-- Comprehensive Faculty Distribution & Summary Breakdown Card -->
+      <div class="dashboard-breakdown-card">
+        <div class="dashboard-breakdown-header">
+          <div>
+            <div class="dashboard-breakdown-title">
+              <i class="fa-solid fa-users text-primary"></i> Faculty Demographics & Breakdown
+            </div>
+            <span style="font-size:0.84rem; color:var(--text-muted);">
+              Active Campus Scope: <strong>${escapeHtml(getCampusNameForId(state.selectedCampusId))}</strong> • Click any group to view teacher list
+            </span>
+          </div>
+          <div>
+            <button class="breakdown-chip breakdown-chip-highlight" onclick="openTeacherListBreakdownModal('All Campus Faculty Members', 'all')" title="View complete teacher directory for active campus">
+              <i class="fa-solid fa-graduation-cap"></i> Total Teachers
+              <span class="breakdown-chip-count">${teachers.length}</span>
             </button>
           </div>
         </div>
 
-        <!-- Department-wise Breakdown -->
-        <div class="breakdown-group-card">
-          <div class="breakdown-group-title">
-            <i class="fa-solid fa-sitemap text-primary"></i> Department-Wise
-          </div>
-          <div class="breakdown-chips-wrap">
-            ${Object.keys(deptMap).length === 0 ? `
-              <span style="font-size:0.8rem; color:var(--text-muted);">No department tags assigned</span>
-            ` : Object.keys(deptMap).sort().map(d => `
-              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Department: ${escapeHtml(d).replace(/'/g, "\\'")}', 'departments', '${escapeHtml(d).replace(/'/g, "\\'")}')">
-                <span>${escapeHtml(d)}</span>
-                <span class="breakdown-chip-count">${deptMap[d].length}</span>
+        <div class="dashboard-breakdown-grid">
+          <!-- Class Teacher Role Status & Class Wise -->
+          <div class="breakdown-group-card">
+            <div class="breakdown-group-title">
+              <i class="fa-solid fa-chalkboard-user text-primary"></i> Class Teacher Status & Classes
+            </div>
+            <div class="breakdown-chips-wrap">
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Class Teachers', 'classTeachers')">
+                <span>Class Teachers</span>
+                <span class="breakdown-chip-count">${classTeachers.length}</span>
               </button>
-            `).join('')}
+              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Non-Class Teachers', 'nonClassTeachers')">
+                <span>Non-Class Teachers</span>
+                <span class="breakdown-chip-count">${nonClassTeachers.length}</span>
+              </button>
+              ${Object.keys(classMap).sort().map(cName => `
+                <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Class: ${escapeHtml(cName).replace(/'/g, "\\'")}', 'classes', '${escapeHtml(cName).replace(/'/g, "\\'")}')" title="${classMap[cName].length} Class Teacher(s)">
+                  <span><i class="fa-solid fa-chalkboard" style="font-size:0.75rem; margin-right:4px;"></i>${escapeHtml(cName)}</span>
+                  <span class="breakdown-chip-count">${classMap[cName].length}</span>
+                </button>
+              `).join('')}
+            </div>
           </div>
-        </div>
 
-        <!-- Designation-wise Breakdown -->
-        <div class="breakdown-group-card">
-          <div class="breakdown-group-title">
-            <i class="fa-solid fa-user-tag text-primary"></i> Designation-Wise
-          </div>
-          <div class="breakdown-chips-wrap">
-            ${Object.keys(desigMap).length === 0 ? `
-              <span style="font-size:0.8rem; color:var(--text-muted);">No designation tags assigned</span>
-            ` : Object.keys(desigMap).sort().map(d => `
-              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Designation: ${escapeHtml(d).replace(/'/g, "\\'")}', 'designations', '${escapeHtml(d).replace(/'/g, "\\'")}')">
-                <span>${escapeHtml(d)}</span>
-                <span class="breakdown-chip-count">${desigMap[d].length}</span>
-              </button>
-            `).join('')}
-          </div>
-        </div>
+          <!-- Dynamic Category Breakdowns (Departments, Designations, Subjects, Categories, Wing, House, etc.) -->
+          ${dashboardVisibleCategories.map(cat => {
+            const valMap = dynamicCategoryMaps[cat.code] || {};
+            const keys = Object.keys(valMap).sort();
+            const iconMap = {
+              DEPARTMENT: 'fa-sitemap',
+              DESIGNATION: 'fa-user-tag',
+              SUBJECT: 'fa-book',
+              CATEGORY: 'fa-tags'
+            };
+            const iconClass = iconMap[cat.code] || 'fa-layer-group';
 
-        <!-- Category-wise Breakdown -->
-        <div class="breakdown-group-card">
-          <div class="breakdown-group-title">
-            <i class="fa-solid fa-tags text-primary"></i> Category-Wise
-          </div>
-          <div class="breakdown-chips-wrap">
-            ${Object.keys(catMap).length === 0 ? `
-              <span style="font-size:0.8rem; color:var(--text-muted);">No category tags assigned</span>
-            ` : Object.keys(catMap).sort().map(c => `
-              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Category: ${escapeHtml(c).replace(/'/g, "\\'")}', 'categories', '${escapeHtml(c).replace(/'/g, "\\'")}')">
-                <span>${escapeHtml(c)}</span>
-                <span class="breakdown-chip-count">${catMap[c].length}</span>
-              </button>
-            `).join('')}
-          </div>
-        </div>
+            return `
+              <div class="breakdown-group-card">
+                <div class="breakdown-group-title">
+                  <i class="fa-solid ${iconClass} text-primary"></i> ${escapeHtml(cat.name)}-Wise
+                </div>
+                <div class="breakdown-chips-wrap">
+                  ${keys.length === 0 ? `
+                    <span style="font-size:0.8rem; color:var(--text-muted);">No ${escapeHtml(cat.name).toLowerCase()} tags assigned</span>
+                  ` : keys.map(k => `
+                    <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('${escapeHtml(cat.name)}: ${escapeHtml(k).replace(/'/g, "\\'")}', '${cat.code}', '${escapeHtml(k).replace(/'/g, "\\'")}')">
+                      <span>${escapeHtml(k)}</span>
+                      <span class="breakdown-chip-count">${valMap[k].length}</span>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }).join('')}
 
-        <!-- Subject-wise Breakdown -->
-        <div class="breakdown-group-card">
-          <div class="breakdown-group-title">
-            <i class="fa-solid fa-book text-primary"></i> Subject-Wise
-          </div>
-          <div class="breakdown-chips-wrap">
-            ${Object.keys(subjMap).length === 0 ? `
-              <span style="font-size:0.8rem; color:var(--text-muted);">No subject tags assigned</span>
-            ` : Object.keys(subjMap).sort().map(s => `
-              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Subject: ${escapeHtml(s).replace(/'/g, "\\'")}', 'subjects', '${escapeHtml(s).replace(/'/g, "\\'")}')">
-                <span>${escapeHtml(s)}</span>
-                <span class="breakdown-chip-count">${subjMap[s].length}</span>
-              </button>
-            `).join('')}
-          </div>
-        </div>
-
-        <!-- Active Groups-wise Breakdown -->
-        <div class="breakdown-group-card">
-          <div class="breakdown-group-title">
-            <i class="fa-solid fa-users-rectangle text-primary"></i> Active Faculty Groups
-          </div>
-          <div class="breakdown-chips-wrap">
-            ${Object.keys(grpMap).length === 0 ? `
-              <span style="font-size:0.8rem; color:var(--text-muted);">No active group rosters</span>
-            ` : Object.keys(grpMap).sort().map(g => `
-              <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Group: ${escapeHtml(g).replace(/'/g, "\\'")}', 'groups', '${escapeHtml(g).replace(/'/g, "\\'")}')">
-                <span>${escapeHtml(g)}</span>
-                <span class="breakdown-chip-count">${grpMap[g].length}</span>
-              </button>
-            `).join('')}
+          <!-- Active Groups-wise Breakdown -->
+          <div class="breakdown-group-card">
+            <div class="breakdown-group-title">
+              <i class="fa-solid fa-users-rectangle text-primary"></i> Active Faculty Groups
+            </div>
+            <div class="breakdown-chips-wrap">
+              ${Object.keys(grpMap).length === 0 ? `
+                <span style="font-size:0.8rem; color:var(--text-muted);">No active group rosters</span>
+              ` : Object.keys(grpMap).sort().map(g => `
+                <button type="button" class="breakdown-chip" onclick="openTeacherListBreakdownModal('Group: ${escapeHtml(g).replace(/'/g, "\\'")}', 'groups', '${escapeHtml(g).replace(/'/g, "\\'")}')">
+                  <span>${escapeHtml(g)}</span>
+                  <span class="breakdown-chip-count">${grpMap[g].length}</span>
+                </button>
+              `).join('')}
+            </div>
           </div>
         </div>
       </div>
-    </div>
 
     <!-- Dual Workspace Columns -->
     <div class="grid-split-2">
@@ -2081,6 +2100,10 @@ function openTeacherListBreakdownModal(title, categoryKey, groupKey) {
     list = (data.all || []).filter(u => u.id === groupKey);
   } else if (data[categoryKey] && groupKey) {
     list = data[categoryKey][groupKey] || [];
+  } else if (categoryKey && data[categoryKey.toUpperCase()] && groupKey) {
+    list = data[categoryKey.toUpperCase()][groupKey] || [];
+  } else if (categoryKey && data[categoryKey.toLowerCase()] && groupKey) {
+    list = data[categoryKey.toLowerCase()][groupKey] || [];
   } else {
     list = data.all || [];
   }
@@ -2746,6 +2769,7 @@ async function openTaskEditor(taskId) {
       step: 1,
       title: task.title,
       description: task.description || '',
+      notification_emails: task.notification_emails || '',
       task_type: task.task_type || 'ONE_TIME',
       open_at: task.open_at ? getLocalDateTimeLocalString(task.open_at, 0) : getLocalDateTimeLocalString(new Date(), 0),
       deadline_at: task.deadline_at ? getLocalDateTimeLocalString(task.deadline_at, 0) : getLocalDateTimeLocalString(new Date(), defaultOffset),
@@ -2800,6 +2824,7 @@ async function renderTaskBuilder(container) {
       step: 1,
       title: '',
       description: '',
+      notification_emails: '',
       task_type: 'ONE_TIME',
       open_at: nowLocal,
       deadline_at: deadlineLocal,
@@ -3037,6 +3062,12 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </div>
         </div>
 
+        <div class="form-group" style="margin-bottom: 20px;">
+          <label><i class="fa-solid fa-envelope-circle-check text-primary" style="margin-right:4px;"></i> User-Defined Task Creation Alert Email(s)</label>
+          <input type="text" id="tb-notification-emails" class="form-input" value="${escapeHtml(tb.notification_emails || '')}" placeholder="e.g. principal@school.edu, coordinator@school.edu" />
+          <small style="color:var(--text-muted); font-size:0.75rem;">Optional comma-separated email addresses to notify immediately when this task is created/published. (System default stakeholder emails are also automatically alerted).</small>
+        </div>
+
         ${tb.editingTaskId ? `
           <div class="form-group">
             <label>Task Status</label>
@@ -3147,27 +3178,38 @@ async function renderTaskBuilderStepContent(tb, campuses) {
       `;
 
     case 4:
-      const [deptsRaw, desigsRaw, subjsRaw, catsRaw, groupsRaw] = await Promise.all([
-        api('/masters?master_type=DEPARTMENT&status=ACTIVE'),
-        api('/masters?master_type=DESIGNATION&status=ACTIVE'),
-        api('/masters?master_type=SUBJECT&status=ACTIVE'),
-        api('/masters?master_type=CATEGORY&status=ACTIVE'),
+      const [masterCategories, allMastersRaw, groupsRaw] = await Promise.all([
+        api('/master-categories?status=ACTIVE'),
+        api('/masters?status=ACTIVE'),
         api('/groups')
       ]);
 
-      const depts = (deptsRaw || []).filter(d => (d.status || 'ACTIVE') === 'ACTIVE' && d.status !== 'INACTIVE');
-      const desigs = (desigsRaw || []).filter(d => (d.status || 'ACTIVE') === 'ACTIVE' && d.status !== 'INACTIVE');
-      const subjs = (subjsRaw || []).filter(s => (s.status || 'ACTIVE') === 'ACTIVE' && s.status !== 'INACTIVE');
-      const cats = (catsRaw || []).filter(c => (c.status || 'ACTIVE') === 'ACTIVE' && c.status !== 'INACTIVE');
+      const categoriesList = masterCategories && masterCategories.length > 0 ? masterCategories : [
+        { code: 'DEPARTMENT', name: 'Departments', selection_mode: 'SINGLE_SELECT' },
+        { code: 'DESIGNATION', name: 'Designations', selection_mode: 'SINGLE_SELECT' },
+        { code: 'SUBJECT', name: 'Subjects', selection_mode: 'MULTI_SELECT' },
+        { code: 'CATEGORY', name: 'Categories', selection_mode: 'MULTI_SELECT' },
+        { code: 'CLASS', name: 'Classes / Sections', selection_mode: 'MULTI_SELECT' }
+      ];
+
+      const allActiveMasters = (allMastersRaw || []).filter(m => (m.status || 'ACTIVE') === 'ACTIVE' && m.status !== 'INACTIVE');
       const groups = (groupsRaw || []).filter(g => (g.status || 'ACTIVE') === 'ACTIVE' && g.status !== 'INACTIVE' && g.status !== 'DRAFT');
 
       const ar = tb.audience_rules || {};
       const currentOp = ar.operator || 'AND';
 
+      const iconMap = {
+        'DEPARTMENT': 'fa-sitemap',
+        'DESIGNATION': 'fa-user-tag',
+        'SUBJECT': 'fa-book',
+        'CATEGORY': 'fa-tags',
+        'CLASS': 'fa-chalkboard'
+      };
+
       return `
         <div style="margin-bottom:20px; border-bottom:1px solid var(--border-subtle); padding-bottom:14px;">
           <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-filter text-primary" style="margin-right:6px;"></i> Step 4: Target Audience Rules</h3>
-          <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Filter teachers by Department, Designation, Subject, or Faculty Groups.</p>
+          <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Filter teachers by Department, Designation, Subject, Categories, Classes, or Faculty Groups.</p>
         </div>
         
         <div style="background:var(--bg-surface); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:16px 20px; margin-bottom:24px; box-shadow:var(--shadow-sm);">
@@ -3189,83 +3231,35 @@ async function renderTaskBuilderStepContent(tb, campuses) {
           </div>
         </div>
 
-        <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-sitemap" style="color:var(--primary); margin-right:4px;"></i> Departments</label>
-            <div style="font-size:0.8rem;">
-              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_depts', true)">Select All</button>
-              <span style="color:var(--text-muted);">|</span>
-              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_depts', false)">Clear</button>
-            </div>
-          </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
-            ${depts.map(d => `
-              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
-                <input type="checkbox" name="tb_depts" value="${d.id}" ${(ar.departments || []).includes(d.id) ? 'checked' : ''} />
-                <span>${escapeHtml(d.name)}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
+        <!-- Dynamic Category Audience Filters -->
+        ${categoriesList.map(cat => {
+          const catMasters = allActiveMasters.filter(m => (m.master_type || '').toUpperCase() === cat.code.toUpperCase());
+          if (catMasters.length === 0) return '';
+          const fieldName = `tb_dyn_${cat.code.toLowerCase()}`;
+          const currentSelected = ar[cat.code.toLowerCase()] || ar[cat.code] || (cat.code === 'DEPARTMENT' ? ar.departments : (cat.code === 'DESIGNATION' ? ar.designations : (cat.code === 'SUBJECT' ? ar.subjects : (cat.code === 'CATEGORY' ? ar.categories : (cat.code === 'CLASS' ? ar.classes : []))))) || [];
+          const icon = iconMap[cat.code.toUpperCase()] || 'fa-folder-tree';
 
-        <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-user-tag" style="color:var(--primary); margin-right:4px;"></i> Designations</label>
-            <div style="font-size:0.8rem;">
-              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_desigs', true)">Select All</button>
-              <span style="color:var(--text-muted);">|</span>
-              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_desigs', false)">Clear</button>
-            </div>
-          </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
-            ${desigs.map(d => `
-              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
-                <input type="checkbox" name="tb_desigs" value="${d.id}" ${(ar.designations || []).includes(d.id) ? 'checked' : ''} />
-                <span>${escapeHtml(d.name)}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-
-        <div class="form-group">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <label style="margin:0; font-weight:700;"><i class="fa-solid fa-book" style="color:var(--primary); margin-right:4px;"></i> Subjects</label>
-            <div style="font-size:0.8rem;">
-              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_subjs', true)">Select All</button>
-              <span style="color:var(--text-muted);">|</span>
-              <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_subjs', false)">Clear</button>
-            </div>
-          </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
-            ${subjs.map(s => `
-              <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
-                <input type="checkbox" name="tb_subjs" value="${s.id}" ${(ar.subjects || []).includes(s.id) ? 'checked' : ''} />
-                <span>${escapeHtml(s.name)}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-
-        ${cats && cats.length > 0 ? `
-          <div class="form-group">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-              <label style="margin:0; font-weight:700;"><i class="fa-solid fa-tags" style="color:var(--primary); margin-right:4px;"></i> Categories</label>
-              <div style="font-size:0.8rem;">
-                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('tb_cats', true)">Select All</button>
-                <span style="color:var(--text-muted);">|</span>
-                <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('tb_cats', false)">Clear</button>
+          return `
+            <div class="form-group">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <label style="margin:0; font-weight:700;"><i class="fa-solid ${icon}" style="color:var(--primary); margin-right:4px;"></i> ${escapeHtml(cat.name)}</label>
+                <div style="font-size:0.8rem;">
+                  <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--primary); cursor:pointer;" onclick="toggleCheckboxGroup('${fieldName}', true)">Select All</button>
+                  <span style="color:var(--text-muted);">|</span>
+                  <button type="button" class="btn-link" style="padding:0 4px; font-size:0.8rem; background:none; border:none; color:var(--text-muted); cursor:pointer;" onclick="toggleCheckboxGroup('${fieldName}', false)">Clear</button>
+                </div>
+              </div>
+              <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
+                ${catMasters.map(m => `
+                  <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
+                    <input type="checkbox" name="${fieldName}" data-cat-code="${cat.code}" value="${m.id}" ${currentSelected.includes(m.id) ? 'checked' : ''} />
+                    <span>${escapeHtml(m.name)}</span>
+                  </label>
+                `).join('')}
               </div>
             </div>
-            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
-              ${cats.map(c => `
-                <label class="choice-tile" style="padding:8px 12px; font-size:0.84rem;">
-                  <input type="checkbox" name="tb_cats" value="${c.id}" ${(ar.categories || []).includes(c.id) ? 'checked' : ''} />
-                  <span>${escapeHtml(c.name)}</span>
-                </label>
-              `).join('')}
-            </div>
-          </div>
-        ` : ''}
+          `;
+        }).join('')}
 
         <div class="form-group">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -3499,6 +3493,7 @@ function saveTaskBuilderStep(curr, next) {
     tb.deadline_at = document.getElementById('tb-deadline').value;
     tb.allow_late_submissions = document.getElementById('tb-allow-late') ? document.getElementById('tb-allow-late').checked : true;
     tb.allow_edit_submission = document.getElementById('tb-allow-edit') ? document.getElementById('tb-allow-edit').checked : false;
+    tb.notification_emails = document.getElementById('tb-notification-emails') ? document.getElementById('tb-notification-emails').value.trim() : (tb.notification_emails || '');
     if (document.getElementById('tb-status')) {
       tb.status = document.getElementById('tb-status').value;
     }
@@ -3584,11 +3579,26 @@ function saveTaskBuilderCampuses() {
 
 function saveTaskBuilderAudience() {
   const op = document.querySelector('input[name="tb_operator"]:checked')?.value || 'AND';
-  state.taskBuilder.audience_rules.operator = op;
-  state.taskBuilder.audience_rules.departments = Array.from(document.querySelectorAll('input[name="tb_depts"]:checked')).map(el => el.value);
-  state.taskBuilder.audience_rules.designations = Array.from(document.querySelectorAll('input[name="tb_desigs"]:checked')).map(el => el.value);
-  state.taskBuilder.audience_rules.subjects = Array.from(document.querySelectorAll('input[name="tb_subjs"]:checked')).map(el => el.value);
-  state.taskBuilder.audience_rules.categories = Array.from(document.querySelectorAll('input[name="tb_cats"]:checked')).map(el => el.value);
+  state.taskBuilder.audience_rules = { operator: op };
+
+  // Dynamically extract all category checkbox values
+  const dynCheckboxes = document.querySelectorAll('input[name^="tb_dyn_"]:checked');
+  dynCheckboxes.forEach(cb => {
+    const catCode = (cb.getAttribute('data-cat-code') || '').toLowerCase();
+    if (!catCode) return;
+    if (!state.taskBuilder.audience_rules[catCode]) {
+      state.taskBuilder.audience_rules[catCode] = [];
+    }
+    state.taskBuilder.audience_rules[catCode].push(cb.value);
+  });
+
+  // Alias maps for backwards compatibility
+  if (state.taskBuilder.audience_rules.department) state.taskBuilder.audience_rules.departments = state.taskBuilder.audience_rules.department;
+  if (state.taskBuilder.audience_rules.designation) state.taskBuilder.audience_rules.designations = state.taskBuilder.audience_rules.designation;
+  if (state.taskBuilder.audience_rules.subject) state.taskBuilder.audience_rules.subjects = state.taskBuilder.audience_rules.subject;
+  if (state.taskBuilder.audience_rules.category) state.taskBuilder.audience_rules.categories = state.taskBuilder.audience_rules.category;
+  if (state.taskBuilder.audience_rules.class) state.taskBuilder.audience_rules.classes = state.taskBuilder.audience_rules.class;
+
   state.taskBuilder.audience_rules.groups = Array.from(document.querySelectorAll('input[name="tb_groups"]:checked')).map(el => el.value);
 
   const ct = document.getElementById('tb-class-teacher').value;
@@ -3687,6 +3697,7 @@ async function saveTaskDraft() {
         task_type: tb.task_type,
         title: tb.title,
         description: tb.description,
+        notification_emails: tb.notification_emails || '',
         campus_ids: tb.campus_ids,
         questions: tb.questions,
         audience_rules: tb.audience_rules,
@@ -3716,6 +3727,7 @@ async function commitPublishTask() {
         task_type: tb.task_type,
         title: tb.title,
         description: tb.description,
+        notification_emails: tb.notification_emails || '',
         campus_ids: tb.campus_ids,
         questions: tb.questions,
         audience_rules: tb.audience_rules,
@@ -3744,6 +3756,7 @@ async function commitUpdateTask() {
       body: {
         title: tb.title,
         description: tb.description,
+        notification_emails: tb.notification_emails || '',
         task_type: tb.task_type,
         campus_ids: tb.campus_ids,
         questions: tb.questions,
@@ -4657,23 +4670,26 @@ async function renderUsersDirectory(container) {
 }
 
 async function openEditUserModal(userId) {
-  const [userData, campuses, departments, designations, subjects, categories] = await Promise.all([
+  const [userData, campuses, masterCategories, allMasters] = await Promise.all([
     api(`/users/${userId}`),
     api('/campuses'),
-    api('/masters?master_type=DEPARTMENT'),
-    api('/masters?master_type=DESIGNATION'),
-    api('/masters?master_type=SUBJECT'),
-    api('/masters?master_type=CATEGORY')
+    api('/master-categories?status=ACTIVE'),
+    api('/masters?status=ACTIVE')
   ]);
 
   const { user, attributes } = userData;
-  const userAttrIds = new Set(attributes.map(a => a.master_value_id));
+  const userAttrIds = new Set((attributes || []).map(a => a.master_value_id));
 
-  // Extract department, designation, subjects, categories
-  const currentDept = attributes.find(a => a.master_type === 'DEPARTMENT');
-  const currentDesig = attributes.find(a => a.master_type === 'DESIGNATION');
-  const currentDeptId = currentDept ? currentDept.master_value_id : '';
-  const currentDesigId = currentDesig ? currentDesig.master_value_id : '';
+  const categoriesList = masterCategories && masterCategories.length > 0 ? masterCategories : [
+    { code: 'DEPARTMENT', name: 'Departments', selection_mode: 'SINGLE_SELECT' },
+    { code: 'DESIGNATION', name: 'Designations', selection_mode: 'SINGLE_SELECT' },
+    { code: 'SUBJECT', name: 'Subjects', selection_mode: 'MULTI_SELECT' },
+    { code: 'CATEGORY', name: 'Categories', selection_mode: 'MULTI_SELECT' },
+    { code: 'CLASS', name: 'Classes / Sections', selection_mode: 'MULTI_SELECT' }
+  ];
+
+  const classMasters = (allMasters || []).filter(m => (m.master_type || '').toUpperCase() === 'CLASS');
+  const otherCats = categoriesList.filter(c => c.code.toUpperCase() !== 'CLASS');
 
   const html = `
     <div class="card-header">
@@ -4723,62 +4739,74 @@ async function openEditUserModal(userId) {
           </div>
         </div>
 
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-          <div class="form-group">
-            <label>Primary Campus <span class="text-danger">*</span></label>
-            <select name="campus_id" class="form-select" required>
-              <option value="">Select Primary Campus...</option>
-              ${campuses.map(c => `<option value="${c.id}" ${c.id === user.campus_id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Designation</label>
-            <select name="designation_id" class="form-select">
-              <option value="">Select Designation...</option>
-              ${designations.map(d => `<option value="${d.id}" ${d.id === currentDesigId ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-
         <div class="form-group">
-          <label>Department</label>
-          <select name="department_id" class="form-select">
-            <option value="">Select Primary Department...</option>
-            ${departments.map(d => `<option value="${d.id}" ${d.id === currentDeptId ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
+          <label>Primary Campus <span class="text-danger">*</span></label>
+          <select name="campus_id" class="form-select" required>
+            <option value="">Select Primary Campus...</option>
+            ${campuses.map(c => `<option value="${c.id}" ${c.id === user.campus_id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
           </select>
         </div>
 
+        <!-- Dynamic Master Categories -->
+        ${otherCats.map(cat => {
+          const catMasters = (allMasters || []).filter(m => (m.master_type || '').toUpperCase() === cat.code.toUpperCase());
+          const isSingle = cat.selection_mode === 'SINGLE_SELECT';
+
+          if (isSingle) {
+            const selectedVal = catMasters.find(m => userAttrIds.has(m.id));
+            return `
+              <div class="form-group">
+                <label>${escapeHtml(cat.name)}</label>
+                <select name="dyn_single_${cat.code}" class="form-select">
+                  <option value="">Select ${escapeHtml(cat.name)}...</option>
+                  ${catMasters.map(m => `
+                    <option value="${m.id}" ${selectedVal && selectedVal.id === m.id ? 'selected' : ''}>
+                      ${escapeHtml(m.name)}
+                    </option>
+                  `).join('')}
+                </select>
+              </div>
+            `;
+          } else {
+            return `
+              <div class="form-group">
+                <label><strong>${escapeHtml(cat.name)} (Multi-Select)</strong></label>
+                <div style="max-height: 110px; overflow-y:auto; background:var(--bg-surface-secondary, var(--border-subtle)); padding:10px; border-radius:var(--radius-md); display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px;">
+                  ${catMasters.map(m => `
+                    <label class="choice-tile" style="padding:6px 10px; font-size:0.84rem;">
+                      <input type="checkbox" name="dyn_multi_${cat.code}" value="${m.id}" ${userAttrIds.has(m.id) ? 'checked' : ''} />
+                      <span>${escapeHtml(m.name)}</span>
+                    </label>
+                  `).join('')}
+                  ${catMasters.length === 0 ? '<span style="color:var(--text-muted); font-size:0.8rem;">No options defined.</span>' : ''}
+                </div>
+              </div>
+            `;
+          }
+        }).join('')}
+
+        <!-- Class Teacher Appointment & Class Multi-Select -->
         <div class="form-group">
           <label class="checkbox-label">
-            <input type="checkbox" name="class_teacher_status" value="true" ${user.class_teacher_status ? 'checked' : ''} />
+            <input type="checkbox" name="class_teacher_status" id="modal-edit-ct-status" value="true" ${user.class_teacher_status ? 'checked' : ''} onchange="document.getElementById('modal-edit-class-wrapper').style.display = this.checked ? 'block' : 'none';" />
             <strong>Class Teacher Appointment</strong>
           </label>
         </div>
 
-        <!-- Subjects -->
-        <div class="form-group">
-          <label><strong>Assigned Subjects</strong></label>
-          <div style="max-height: 120px; overflow-y:auto; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md); display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px;">
-            ${subjects.map(s => `
-              <label class="checkbox-label">
-                <input type="checkbox" name="subject_ids" value="${s.id}" ${userAttrIds.has(s.id) ? 'checked' : ''} />
-                ${escapeHtml(s.name)}
+        <div id="modal-edit-class-wrapper" class="form-group" style="display: ${user.class_teacher_status ? 'block' : 'none'}; background: var(--bg-surface-secondary, var(--border-subtle)); padding: 12px; border-radius: var(--radius-md); border-left: 4px solid var(--primary);">
+          <label style="font-weight: 700; color: var(--primary); margin-bottom: 6px; display: block;">
+            <i class="fa-solid fa-chalkboard-user"></i> Assigned Class(es) / Section(s) (Multi-Select)
+          </label>
+          <div style="max-height: 120px; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;">
+            ${classMasters.map(cl => `
+              <label class="choice-tile" style="padding: 6px 10px; font-size: 0.84rem;">
+                <input type="checkbox" name="class_ids" value="${cl.id}" ${userAttrIds.has(cl.id) ? 'checked' : ''} />
+                <span>${escapeHtml(cl.name)}</span>
               </label>
             `).join('')}
+            ${classMasters.length === 0 ? '<span style="color:var(--text-muted); font-size:0.8rem;">No classes found in Master Data.</span>' : ''}
           </div>
-        </div>
-
-        <!-- Categories -->
-        <div class="form-group">
-          <label><strong>Faculty Categories (e.g. Senior Wing, Primary Wing)</strong></label>
-          <div style="max-height: 100px; overflow-y:auto; background:var(--border-subtle); padding:10px; border-radius:var(--radius-md); display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px;">
-            ${categories.map(c => `
-              <label class="checkbox-label">
-                <input type="checkbox" name="category_ids" value="${c.id}" ${userAttrIds.has(c.id) ? 'checked' : ''} />
-                ${escapeHtml(c.name)}
-              </label>
-            `).join('')}
-          </div>
+          <small style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px; display: block;">Select all classes where this teacher is assigned (Co-Class Teachers supported).</small>
         </div>
 
         <!-- Password Reset -->
@@ -4802,6 +4830,25 @@ async function openEditUserModal(userId) {
 async function handleSaveUser(event, userId) {
   event.preventDefault();
   const formData = new FormData(event.target);
+
+  const masterValueIds = [];
+  let departmentId = null;
+  let designationId = null;
+  const subjectIds = [];
+  const categoryIds = [];
+
+  for (const [key, val] of formData.entries()) {
+    if (!val) continue;
+    if (key.startsWith('dyn_single_') || key.startsWith('dyn_multi_')) {
+      const catCode = key.replace(/^dyn_(single|multi)_/, '');
+      if (catCode === 'DEPARTMENT') departmentId = val;
+      else if (catCode === 'DESIGNATION') designationId = val;
+      else if (catCode === 'SUBJECT') subjectIds.push(val);
+      else if (catCode === 'CATEGORY') categoryIds.push(val);
+      else masterValueIds.push(val);
+    }
+  }
+
   const payload = {
     first_name: formData.get('first_name'),
     last_name: formData.get('last_name'),
@@ -4809,11 +4856,13 @@ async function handleSaveUser(event, userId) {
     employee_code: formData.get('employee_code'),
     status: formData.get('status'),
     campus_id: formData.get('campus_id'),
-    designation_id: formData.get('designation_id') || null,
-    department_id: formData.get('department_id') || null,
+    designation_id: designationId,
+    department_id: departmentId,
     class_teacher_status: formData.get('class_teacher_status') === 'true',
-    subject_ids: formData.getAll('subject_ids'),
-    category_ids: formData.getAll('category_ids')
+    subject_ids: subjectIds,
+    category_ids: categoryIds,
+    class_ids: formData.getAll('class_ids'),
+    master_value_ids: masterValueIds
   };
 
   const password = formData.get('password');
@@ -4971,7 +5020,22 @@ async function handleSaveUserAccess(event, userId) {
 }
 
 async function openCreateUserModal() {
-  const campuses = await api('/campuses');
+  const [campuses, masterCategories, allMasters] = await Promise.all([
+    api('/campuses'),
+    api('/master-categories?status=ACTIVE'),
+    api('/masters?status=ACTIVE')
+  ]);
+
+  const categoriesList = masterCategories && masterCategories.length > 0 ? masterCategories : [
+    { code: 'DEPARTMENT', name: 'Departments', selection_mode: 'SINGLE_SELECT' },
+    { code: 'DESIGNATION', name: 'Designations', selection_mode: 'SINGLE_SELECT' },
+    { code: 'SUBJECT', name: 'Subjects', selection_mode: 'MULTI_SELECT' },
+    { code: 'CATEGORY', name: 'Categories', selection_mode: 'MULTI_SELECT' },
+    { code: 'CLASS', name: 'Classes / Sections', selection_mode: 'MULTI_SELECT' }
+  ];
+
+  const classMasters = (allMasters || []).filter(m => (m.master_type || '').toUpperCase() === 'CLASS');
+  const otherCats = categoriesList.filter(c => c.code.toUpperCase() !== 'CLASS');
 
   const html = `
     <div class="card-header">
@@ -5005,12 +5069,64 @@ async function openCreateUserModal() {
             ${campuses.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
           </select>
         </div>
+
+        <!-- Dynamic Master Categories -->
+        ${otherCats.map(cat => {
+          const catMasters = (allMasters || []).filter(m => (m.master_type || '').toUpperCase() === cat.code.toUpperCase());
+          const isSingle = cat.selection_mode === 'SINGLE_SELECT';
+
+          if (isSingle) {
+            return `
+              <div class="form-group">
+                <label>${escapeHtml(cat.name)}</label>
+                <select name="dyn_single_${cat.code}" class="form-select">
+                  <option value="">Select ${escapeHtml(cat.name)}...</option>
+                  ${catMasters.map(m => `
+                    <option value="${m.id}">${escapeHtml(m.name)}</option>
+                  `).join('')}
+                </select>
+              </div>
+            `;
+          } else {
+            return `
+              <div class="form-group">
+                <label><strong>${escapeHtml(cat.name)} (Multi-Select)</strong></label>
+                <div style="max-height: 100px; overflow-y:auto; background:var(--bg-surface-secondary, var(--border-subtle)); padding:10px; border-radius:var(--radius-md); display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px;">
+                  ${catMasters.map(m => `
+                    <label class="choice-tile" style="padding:6px 10px; font-size:0.84rem;">
+                      <input type="checkbox" name="dyn_multi_${cat.code}" value="${m.id}" />
+                      <span>${escapeHtml(m.name)}</span>
+                    </label>
+                  `).join('')}
+                  ${catMasters.length === 0 ? '<span style="color:var(--text-muted); font-size:0.8rem;">No options defined.</span>' : ''}
+                </div>
+              </div>
+            `;
+          }
+        }).join('')}
+
         <div class="form-group">
           <label class="checkbox-label">
-            <input type="checkbox" name="class_teacher_status" value="true" />
-            Class Teacher Appointment
+            <input type="checkbox" name="class_teacher_status" id="modal-create-ct-status" value="true" onchange="document.getElementById('modal-create-class-wrapper').style.display = this.checked ? 'block' : 'none';" />
+            <strong>Class Teacher Appointment</strong>
           </label>
         </div>
+
+        <div id="modal-create-class-wrapper" class="form-group" style="display: none; background: var(--bg-surface-secondary, var(--border-subtle)); padding: 12px; border-radius: var(--radius-md); border-left: 4px solid var(--primary);">
+          <label style="font-weight: 700; color: var(--primary); margin-bottom: 6px; display: block;">
+            <i class="fa-solid fa-chalkboard-user"></i> Assigned Class(es) / Section(s) (Multi-Select)
+          </label>
+          <div style="max-height: 120px; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;">
+            ${classMasters.map(cl => `
+              <label class="choice-tile" style="padding: 6px 10px; font-size: 0.84rem;">
+                <input type="checkbox" name="class_ids" value="${cl.id}" />
+                <span>${escapeHtml(cl.name)}</span>
+              </label>
+            `).join('')}
+            ${classMasters.length === 0 ? '<span style="color:var(--text-muted); font-size:0.8rem;">No classes found in Master Data.</span>' : ''}
+          </div>
+        </div>
+
         <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
           <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
           <button type="submit" class="btn btn-primary">Create Teacher</button>
@@ -5024,13 +5140,38 @@ async function openCreateUserModal() {
 async function handleCreateUser(event) {
   event.preventDefault();
   const formData = new FormData(event.target);
+
+  const masterValueIds = [];
+  let departmentId = null;
+  let designationId = null;
+  const subjectIds = [];
+  const categoryIds = [];
+
+  for (const [key, val] of formData.entries()) {
+    if (!val) continue;
+    if (key.startsWith('dyn_single_') || key.startsWith('dyn_multi_')) {
+      const catCode = key.replace(/^dyn_(single|multi)_/, '');
+      if (catCode === 'DEPARTMENT') departmentId = val;
+      else if (catCode === 'DESIGNATION') designationId = val;
+      else if (catCode === 'SUBJECT') subjectIds.push(val);
+      else if (catCode === 'CATEGORY') categoryIds.push(val);
+      else masterValueIds.push(val);
+    }
+  }
+
   const payload = {
     first_name: formData.get('first_name'),
     last_name: formData.get('last_name'),
     email: formData.get('email'),
     employee_code: formData.get('employee_code'),
     campus_id: formData.get('campus_id'),
+    designation_id: designationId,
+    department_id: departmentId,
     class_teacher_status: formData.get('class_teacher_status') === 'true',
+    subject_ids: subjectIds,
+    category_ids: categoryIds,
+    class_ids: formData.getAll('class_ids'),
+    master_value_ids: masterValueIds,
     user_type: 'TEACHER'
   };
 
@@ -6008,32 +6149,185 @@ async function reviewGroupRequest(id, action) {
   }
 }
 
-// Master Data Management
+// Master Data & Category Types Management
 async function renderMasterData(container) {
-  const currentTab = state.filters.masterTab || 'DEPARTMENT';
-  const masters = await api(`/masters?master_type=${currentTab}`);
+  const isTypesView = state.filters.masterMainView === 'TYPES';
   const canEdit = hasPermission('masters.edit') || state.user.isSuperAdmin;
+  const canCreate = hasPermission('masters.create') || state.user.isSuperAdmin;
+
+  if (isTypesView) {
+    // -------------------------------------------------------------
+    // View 1: Category Types Configuration View
+    // -------------------------------------------------------------
+    const categories = await api('/master-categories?include_inactive=true');
+
+    container.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
+        <div>
+          <h2><i class="fa-solid fa-sliders text-primary"></i> Master Category Types Configuration</h2>
+          <p style="color:var(--text-muted); font-size:0.88rem; margin:4px 0 0 0;">
+            Define unlimited custom categories (e.g. Wing, House, Club, Grade), configure selection modes (Single-select vs Multi-select checkboxes), and toggle dashboard visibility.
+          </p>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-outline" onclick="state.filters.masterMainView = 'VALUES'; loadCurrentView();">
+            <i class="fa-solid fa-list-check"></i> Manage Master Values
+          </button>
+          ${canCreate ? `
+            <button class="btn btn-primary" onclick="openCreateMasterCategoryModal()">
+              <i class="fa-solid fa-plus"></i> Create New Category Type
+            </button>
+          ` : ''}
+        </div>
+      </div>
+
+      <!-- Top Sub-Nav Switcher -->
+      <div style="display:flex; gap:8px; margin-bottom: 20px; border-bottom:1px solid var(--border-color); padding-bottom:8px;">
+        <button class="btn btn-outline btn-sm" onclick="state.filters.masterMainView = 'VALUES'; loadCurrentView();">
+          <i class="fa-solid fa-layer-group"></i> Master Values Roster
+        </button>
+        <button class="btn btn-primary btn-sm" onclick="state.filters.masterMainView = 'TYPES'; loadCurrentView();">
+          <i class="fa-solid fa-sliders"></i> Category Types Configuration (${categories.length})
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Category Name</th>
+                  <th>Category Code</th>
+                  <th>Selection Mode</th>
+                  <th>Dashboard Visibility</th>
+                  <th>Category Type</th>
+                  <th>Status</th>
+                  <th style="text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${categories.length === 0 ? `
+                  <tr><td colspan="7" class="empty-state">No master category types found. Click "Create New Category Type" to add one.</td></tr>
+                ` : categories.map(cat => {
+                  const isMulti = cat.selection_mode === 'MULTI_SELECT';
+                  const isDashboard = cat.show_on_dashboard !== false;
+                  const isActive = cat.status === 'ACTIVE';
+
+                  return `
+                    <tr>
+                      <td>
+                        <strong>${escapeHtml(cat.name)}</strong>
+                      </td>
+                      <td><code>${escapeHtml(cat.code)}</code></td>
+                      <td>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <span class="badge ${isMulti ? 'badge-in-progress' : 'badge-secondary'}" style="font-size:0.75rem;">
+                            <i class="fa-solid ${isMulti ? 'fa-square-check' : 'fa-circle-dot'}"></i> ${isMulti ? 'Multi-Select (Checkboxes)' : 'Single-Select (Dropdown)'}
+                          </span>
+                          ${canEdit ? `
+                            <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.72rem;" onclick="toggleMasterCategorySelectionMode('${cat.id}', '${cat.selection_mode}')" title="Switch between single and multi-select">
+                              <i class="fa-solid fa-repeat"></i> Switch
+                            </button>
+                          ` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <span class="badge ${isDashboard ? 'badge-active' : 'badge-not-started'}" style="font-size:0.75rem;">
+                            <i class="fa-solid ${isDashboard ? 'fa-eye' : 'fa-eye-slash'}"></i> ${isDashboard ? 'Visible on Dashboard' : 'Hidden on Dashboard'}
+                          </span>
+                          ${canEdit ? `
+                            <button class="btn btn-outline btn-sm" style="padding:2px 6px; font-size:0.72rem;" onclick="toggleMasterCategoryDashboard('${cat.id}', ${isDashboard})" title="Toggle Dashboard Visibility">
+                              <i class="fa-solid fa-toggle-on"></i> Toggle
+                            </button>
+                          ` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        ${cat.is_system ? `<span class="badge badge-secondary" style="font-size:0.72rem;"><i class="fa-solid fa-lock"></i> Built-In</span>` : `<span class="badge badge-active" style="font-size:0.72rem;"><i class="fa-solid fa-sparkles"></i> Custom</span>`}
+                      </td>
+                      <td>
+                        <span class="badge badge-${(cat.status || 'ACTIVE').toLowerCase()}">${cat.status || 'ACTIVE'}</span>
+                      </td>
+                      <td style="text-align:right;">
+                        <div style="display:inline-flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                          ${canEdit ? `
+                            <button class="btn btn-outline btn-sm" onclick="openEditMasterCategoryModal('${cat.id}', '${escapeHtml(cat.name).replace(/'/g, "\\'")}', '${escapeHtml(cat.code).replace(/'/g, "\\'")}', '${cat.selection_mode}', ${isDashboard}, '${cat.status}', ${cat.sort_order || 0})" title="Edit Category Settings">
+                              <i class="fa-solid fa-pen-to-square"></i> Edit
+                            </button>
+                            <button class="btn btn-secondary btn-sm" onclick="toggleMasterCategoryStatus('${cat.id}', '${cat.name}', '${cat.status}')" title="${isActive ? 'Deactivate' : 'Activate'}">
+                              <i class="fa-solid ${isActive ? 'fa-toggle-on text-success' : 'fa-toggle-off text-danger'}"></i> ${isActive ? 'Deactivate' : 'Activate'}
+                            </button>
+                          ` : ''}
+                          ${(!cat.is_system && canEdit) ? `
+                            <button class="btn btn-outline btn-sm" style="color:var(--danger); border-color:var(--danger);" onclick="deleteMasterCategory('${cat.id}', '${escapeHtml(cat.name).replace(/'/g, "\\'")}')" title="Delete Custom Category">
+                              <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                          ` : ''}
+                        </div>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // View 2: Master Values Management View (Dynamic Tabs)
+  // -------------------------------------------------------------
+  const allCategories = await api('/master-categories?status=ACTIVE');
+  const availableTabs = allCategories.length > 0 ? allCategories : [
+    { code: 'DEPARTMENT', name: 'Department' },
+    { code: 'DESIGNATION', name: 'Designation' },
+    { code: 'SUBJECT', name: 'Subject' },
+    { code: 'CATEGORY', name: 'Faculty Category' },
+    { code: 'CLASS', name: 'Class / Section' }
+  ];
+
+  let currentTab = state.filters.masterTab || (availableTabs[0] ? availableTabs[0].code : 'DEPARTMENT');
+  if (!availableTabs.some(t => t.code === currentTab)) {
+    currentTab = availableTabs[0] ? availableTabs[0].code : 'DEPARTMENT';
+    state.filters.masterTab = currentTab;
+  }
+
+  const activeCategoryObj = availableTabs.find(t => t.code === currentTab) || { code: currentTab, name: currentTab };
+  const masters = await api(`/masters?master_type=${currentTab}`);
 
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
-      <h2><i class="fa-solid fa-layer-group"></i> Master Data Management</h2>
-      <div style="display:flex; gap:10px;">
-        ${hasPermission('masters.create') ? `
-          <button class="btn btn-secondary" onclick="openBulkMasterModal('${currentTab}')">
-            <i class="fa-solid fa-bolt text-warning"></i> Bulk Add ${currentTab}s
+      <div>
+        <h2><i class="fa-solid fa-layer-group"></i> Master Data Management</h2>
+        <p style="color:var(--text-muted); font-size:0.88rem; margin:4px 0 0 0;">
+          Manage institutional master lists for ${escapeHtml(activeCategoryObj.name)}s, classes, departments, and custom organizational tags.
+        </p>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn btn-outline" onclick="state.filters.masterMainView = 'TYPES'; loadCurrentView();">
+          <i class="fa-solid fa-sliders text-primary"></i> Configure Category Types
+        </button>
+        ${canCreate ? `
+          <button class="btn btn-secondary" onclick="openBulkMasterModal('${currentTab}', '${escapeHtml(activeCategoryObj.name).replace(/'/g, "\\'")}')">
+            <i class="fa-solid fa-bolt text-warning"></i> Bulk Add ${escapeHtml(activeCategoryObj.name)}s
           </button>
-          <button class="btn btn-primary" onclick="openCreateMasterModal('${currentTab}')">
-            <i class="fa-solid fa-plus"></i> Add Single ${currentTab}
+          <button class="btn btn-primary" onclick="openCreateMasterModal('${currentTab}', '${escapeHtml(activeCategoryObj.name).replace(/'/g, "\\'")}')">
+            <i class="fa-solid fa-plus"></i> Add Single ${escapeHtml(activeCategoryObj.name)}
           </button>
         ` : ''}
       </div>
     </div>
 
-    <!-- Tab Bar -->
+    <!-- Sub-Nav & Dynamic Category Tabs -->
     <div style="display:flex; gap:8px; margin-bottom: 20px; border-bottom:1px solid var(--border-color); padding-bottom:8px; overflow-x:auto;">
-      ${['DEPARTMENT', 'DESIGNATION', 'SUBJECT', 'CATEGORY'].map(tab => `
-        <button class="btn ${currentTab === tab ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="state.filters.masterTab = '${tab}'; loadCurrentView();">
-          ${tab}S
+      ${availableTabs.map(cat => `
+        <button class="btn ${currentTab === cat.code ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="state.filters.masterTab = '${cat.code}'; loadCurrentView();">
+          ${escapeHtml(cat.name)}
         </button>
       `).join('')}
     </div>
@@ -6044,7 +6338,7 @@ async function renderMasterData(container) {
           <table class="table">
             <thead>
               <tr>
-                <th>Name</th>
+                <th>Name / Label</th>
                 <th>Code</th>
                 <th>Campus Scope</th>
                 <th>Sort Order</th>
@@ -6054,7 +6348,7 @@ async function renderMasterData(container) {
             </thead>
             <tbody>
               ${masters.length === 0 ? `
-                <tr><td colspan="6" class="empty-state">No ${currentTab.toLowerCase()} entries found. Use "Add Single" or "Bulk Add" above.</td></tr>
+                <tr><td colspan="6" class="empty-state">No ${escapeHtml(activeCategoryObj.name).toLowerCase()} entries found. Use "Add Single" or "Bulk Add" above.</td></tr>
               ` : masters.map(m => `
                 <tr>
                   <td><strong>${escapeHtml(m.name)}</strong></td>
@@ -6079,13 +6373,197 @@ async function renderMasterData(container) {
   `;
 }
 
-async function openBulkMasterModal(masterType) {
+// -------------------------------------------------------------
+// Category Types Modals & Action Handlers
+// -------------------------------------------------------------
+function openCreateMasterCategoryModal() {
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3><i class="fa-solid fa-plus-circle text-primary"></i> Create Master Category Type</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">Add a new category dimension (e.g. Wing, House, Grade Level, Club In-charge)</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-create-master-cat" onsubmit="handleCreateMasterCategory(event)">
+        <div class="form-group">
+          <label>Category Name <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" required placeholder="e.g. House or Learning Wing" />
+        </div>
+        <div class="form-group">
+          <label>Category Code (Unique Slug)</label>
+          <input type="text" name="code" class="form-input" placeholder="e.g. HOUSE or WING (Auto-generated if omitted)" />
+        </div>
+        <div class="form-group">
+          <label>Selection Mode <span class="text-danger">*</span></label>
+          <select name="selection_mode" class="form-select" required>
+            <option value="MULTI_SELECT" selected>Multi-Select (Checkboxes - Faculty can belong to multiple values)</option>
+            <option value="SINGLE_SELECT">Single-Select (Dropdown / Radio - Faculty can belong to only one value)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="show_on_dashboard" value="true" checked />
+            <strong>Show breakdown card with real-time teacher count on Admin Dashboard</strong>
+          </label>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-plus-circle"></i> Create Category Type
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleCreateMasterCategory(event) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    name: formData.get('name'),
+    code: formData.get('code'),
+    selection_mode: formData.get('selection_mode'),
+    show_on_dashboard: formData.get('show_on_dashboard') === 'true'
+  };
+
+  try {
+    const res = await api('/master-categories', { method: 'POST', body: payload });
+    showToast(`Master category "${res.name}" created successfully!`, 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {}
+}
+
+function openEditMasterCategoryModal(id, name, code, selectionMode, showOnDashboard, status, sortOrder) {
+  const html = `
+    <div class="card-header">
+      <div>
+        <h3>Edit Master Category Configuration</h3>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(name)} (<code>${escapeHtml(code)}</code>)</span>
+      </div>
+      <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="form-edit-master-cat" onsubmit="handleSaveMasterCategory(event, '${id}')">
+        <div class="form-group">
+          <label>Category Display Name <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" value="${escapeHtml(name)}" required />
+        </div>
+        <div class="form-group">
+          <label>Selection Mode <span class="text-danger">*</span></label>
+          <select name="selection_mode" class="form-select" required>
+            <option value="MULTI_SELECT" ${selectionMode === 'MULTI_SELECT' ? 'selected' : ''}>Multi-Select (Checkboxes - Faculty can belong to multiple values)</option>
+            <option value="SINGLE_SELECT" ${selectionMode === 'SINGLE_SELECT' ? 'selected' : ''}>Single-Select (Dropdown / Radio - Faculty can belong to only one value)</option>
+          </select>
+          <span style="font-size:0.75rem; color:var(--text-muted);">You can switch between single-select and multi-select anytime.</span>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="show_on_dashboard" value="true" ${showOnDashboard ? 'checked' : ''} />
+            <strong>Show breakdown card with real-time teacher count on Admin Dashboard</strong>
+          </label>
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label>Sort Order</label>
+            <input type="number" name="sort_order" class="form-input" value="${sortOrder}" />
+          </div>
+          <div class="form-group">
+            <label>Status <span class="text-danger">*</span></label>
+            <select name="status" class="form-select" required>
+              <option value="ACTIVE" ${status === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+              <option value="INACTIVE" ${status === 'INACTIVE' ? 'selected' : ''}>INACTIVE</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fa-solid fa-floppy-disk"></i> Save Category Settings
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSaveMasterCategory(event, id) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const payload = {
+    name: formData.get('name'),
+    selection_mode: formData.get('selection_mode'),
+    show_on_dashboard: formData.get('show_on_dashboard') === 'true',
+    status: formData.get('status'),
+    sort_order: parseInt(formData.get('sort_order'), 10) || 0
+  };
+
+  try {
+    const res = await api(`/master-categories/${id}`, { method: 'PUT', body: payload });
+    showToast(res.message || 'Category settings updated successfully!', 'success');
+    closeModal();
+    loadCurrentView();
+  } catch {}
+}
+
+async function toggleMasterCategorySelectionMode(id, currentMode) {
+  const newMode = currentMode === 'SINGLE_SELECT' ? 'MULTI_SELECT' : 'SINGLE_SELECT';
+  try {
+    await api(`/master-categories/${id}`, {
+      method: 'PUT',
+      body: { selection_mode: newMode }
+    });
+    showToast(`Selection mode updated to ${newMode === 'MULTI_SELECT' ? 'Multi-Select (Checkboxes)' : 'Single-Select (Dropdown)'}`, 'success');
+    loadCurrentView();
+  } catch {}
+}
+
+async function toggleMasterCategoryDashboard(id, currentShow) {
+  const newShow = !currentShow;
+  try {
+    await api(`/master-categories/${id}`, {
+      method: 'PUT',
+      body: { show_on_dashboard: newShow }
+    });
+    showToast(`Dashboard visibility ${newShow ? 'enabled' : 'hidden'}`, 'success');
+    loadCurrentView();
+  } catch {}
+}
+
+async function toggleMasterCategoryStatus(id, name, currentStatus) {
+  const newStatus = currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+  try {
+    await api(`/master-categories/${id}`, {
+      method: 'PUT',
+      body: { status: newStatus }
+    });
+    showToast(`Category "${name}" is now ${newStatus}`, 'success');
+    loadCurrentView();
+  } catch {}
+}
+
+async function deleteMasterCategory(id, name) {
+  if (!confirm(`Are you sure you want to delete category "${name}"?`)) return;
+  try {
+    const res = await api(`/master-categories/${id}`, { method: 'DELETE' });
+    showToast(res.message || 'Category deleted successfully', 'success');
+    loadCurrentView();
+  } catch {}
+}
+
+async function openBulkMasterModal(masterType, masterLabel) {
   const campuses = await api('/campuses');
+  const label = masterLabel || masterType;
 
   const html = `
     <div class="card-header">
       <div>
-        <h3><i class="fa-solid fa-bolt text-warning"></i> Bulk Add ${masterType}s</h3>
+        <h3><i class="fa-solid fa-bolt text-warning"></i> Bulk Add ${escapeHtml(label)}s</h3>
         <span style="font-size:0.85rem; color:var(--text-muted);">Paste or type multiple entries at once</span>
       </div>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
@@ -6102,7 +6580,7 @@ async function openBulkMasterModal(masterType) {
 
         <div class="form-group">
           <label>Entries (One per line, format: <code>Name</code> or <code>Name, Code</code>) <span class="text-danger">*</span></label>
-          <textarea name="text" class="form-textarea" rows="8" required placeholder="English&#10;Mathematics, DEP_MATH&#10;Physics, SUB_PHY&#10;Chemistry, SUB_CHEM&#10;Senior Secondary Wing, CAT_SNR"></textarea>
+          <textarea name="text" class="form-textarea" rows="8" required placeholder="Class 10-A, CLS_10A&#10;Class 10-B, CLS_10B&#10;Class 11-Science, CLS_11SCI&#10;Class 12-Commerce, CLS_12COM"></textarea>
           <span style="font-size:0.75rem; color:var(--text-muted);">Codes and sequential sort orders will be automatically generated if omitted.</span>
         </div>
 
@@ -6129,7 +6607,7 @@ async function handleBulkMasters(event, masterType) {
       method: 'POST',
       body: { master_type: masterType, campus_id, text }
     });
-    showToast(`Successfully bulk added ${res.count} ${masterType.toLowerCase()}s!`, 'success');
+    showToast(`Successfully bulk added ${res.count} items!`, 'success');
     closeModal();
     loadCurrentView();
   } catch {
@@ -6137,23 +6615,24 @@ async function handleBulkMasters(event, masterType) {
   }
 }
 
-async function openCreateMasterModal(masterType) {
+async function openCreateMasterModal(masterType, masterLabel) {
   const campuses = await api('/campuses');
+  const label = masterLabel || masterType;
 
   const html = `
     <div class="card-header">
-      <h3>Add Single ${masterType} Master</h3>
+      <h3>Add Single ${escapeHtml(label)} Master</h3>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <div class="card-body">
       <form id="form-create-master" onsubmit="handleCreateMaster(event, '${masterType}')">
         <div class="form-group">
-          <label>Name <span class="text-danger">*</span></label>
-          <input type="text" name="name" class="form-input" required placeholder="e.g. Robotics & AI" />
+          <label>Name / Label <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-input" required placeholder="e.g. Class 10-A or Robotics" />
         </div>
         <div class="form-group">
           <label>Code</label>
-          <input type="text" name="code" class="form-input" placeholder="e.g. SUB_ROBOTICS" />
+          <input type="text" name="code" class="form-input" placeholder="e.g. CLS_10A (Auto-generated if left blank)" />
         </div>
         <div class="form-group">
           <label>Campus Scope</label>
@@ -6164,7 +6643,7 @@ async function openCreateMasterModal(masterType) {
         </div>
         <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:24px;">
           <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button type="submit" class="btn btn-primary">Save Master</button>
+          <button type="submit" class="btn btn-primary">Save Master Value</button>
         </div>
       </form>
     </div>
@@ -6198,7 +6677,7 @@ async function openEditMasterModal(masterId, masterType, name, code, campusId, s
   const html = `
     <div class="card-header">
       <div>
-        <h3>Edit ${masterType} Master</h3>
+        <h3>Edit Master Value</h3>
         <span style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(name)}</span>
       </div>
       <button class="btn-icon" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
@@ -6206,7 +6685,7 @@ async function openEditMasterModal(masterId, masterType, name, code, campusId, s
     <div class="card-body">
       <form id="form-edit-master" onsubmit="handleSaveMaster(event, '${masterId}')">
         <div class="form-group">
-          <label>Name <span class="text-danger">*</span></label>
+          <label>Name / Label <span class="text-danger">*</span></label>
           <input type="text" name="name" class="form-input" value="${escapeHtml(name)}" required />
         </div>
         <div class="form-group">
@@ -7343,6 +7822,12 @@ async function renderSystemSettings(container) {
               <input type="email" name="email_from_address" class="form-input" value="${escapeHtml(s.email_from_address || 'contact@srbps.com')}" required placeholder="e.g. contact@srbps.com" />
             </div>
           </div>
+
+          <div class="form-group" style="margin-top:16px;">
+            <label><i class="fa-solid fa-bullhorn text-primary"></i> Global Task Creation Alert Email(s) (Comma-separated)</label>
+            <input type="text" name="task_notification_emails" class="form-input" value="${escapeHtml(s.task_notification_emails || '')}" placeholder="e.g. principal@institution.edu, coordinator@institution.edu" />
+            <small style="color:var(--text-muted); font-size:0.75rem;">Authorized stakeholder email addresses that automatically receive notification emails whenever any new institutional task is published.</small>
+          </div>
         </div>
       </div>
 
@@ -7373,7 +7858,8 @@ async function saveSystemSettings(event) {
     allow_late_submissions_default: form.allow_late_submissions_default.checked ? 'true' : 'false',
     allow_edit_submission_default: form.allow_edit_submission_default.checked ? 'true' : 'false',
     email_from_name: form.email_from_name.value.trim(),
-    email_from_address: form.email_from_address.value.trim()
+    email_from_address: form.email_from_address.value.trim(),
+    task_notification_emails: form.task_notification_emails ? form.task_notification_emails.value.trim() : ''
   };
 
   try {
