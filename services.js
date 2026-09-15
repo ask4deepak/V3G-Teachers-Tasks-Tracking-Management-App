@@ -991,13 +991,16 @@ async function sendTaskCreatedStakeholdersEmail(task, creatorUser, activeRecipie
     const deadlineStr = deadline ? new Date(deadline).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : 'N/A';
     const creatorName = creatorUser ? `${creatorUser.display_name || creatorUser.first_name + ' ' + (creatorUser.last_name || '')} (${creatorUser.email})` : 'Administrator';
 
-    const subject = `[Task Alert] New Task Created: ${task.title} (${activeRecipients.length} Assignees)`;
+    const isPublished = activeRecipients && activeRecipients.length > 0;
+    const subject = isPublished
+      ? `[Task Alert] New Task Created & Published: ${task.title} (${activeRecipients.length} Assignees)`
+      : `[Task Alert] New Task Created: ${task.title}`;
 
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 24px; border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff;">
         <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
           <h2 style="color: #1d4ed8; margin: 0; font-size: 20px;">Institutional Task Notification</h2>
-          <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Automated alert for user-defined authorized stakeholders</p>
+          <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Automated alert for global and user-defined authorized stakeholders</p>
         </div>
 
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px;">
@@ -1015,7 +1018,7 @@ async function sendTaskCreatedStakeholdersEmail(task, creatorUser, activeRecipie
           </tr>
           <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 8px 0; font-weight: bold; color: #475569;">Assigned Recipients:</td>
-            <td style="padding: 8px 0; color: #2563eb; font-weight: bold;">${activeRecipients.length} Teacher(s)</td>
+            <td style="padding: 8px 0; color: #2563eb; font-weight: bold;">${isPublished ? `${activeRecipients.length} Teacher(s)` : 'Draft / Recipient Rules Configured'}</td>
           </tr>
         </table>
 
@@ -1037,12 +1040,19 @@ async function sendTaskCreatedStakeholdersEmail(task, creatorUser, activeRecipie
       </div>
     `;
 
-    return await dispatchMail({
+    const dispatchResult = await dispatchMail({
       from,
       to: allEmails.join(','),
       subject,
       html
     });
+
+    return {
+      success: true,
+      emails: allEmails,
+      notifiedCount: allEmails.length,
+      ...dispatchResult
+    };
   } catch (err) {
     console.error('[sendTaskCreatedStakeholdersEmail Error]', err);
     throw err;

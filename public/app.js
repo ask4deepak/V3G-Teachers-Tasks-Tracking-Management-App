@@ -3812,22 +3812,32 @@ async function commitUpdateTask() {
 function renderReportTabs(activeTab) {
   return `
     <div class="reports-nav-tabs">
-      <button class="btn ${activeTab === 'task-wise' ? 'btn-primary' : 'btn-outline'}" onclick="navigateTo('reports-task-wise')">
+      <button class="btn ${activeTab === 'task-wise' ? 'btn-primary' : 'btn-outline'}" onclick="syncAndNavigateReportTab('reports-task-wise')">
         <i class="fa-solid fa-chart-pie"></i> Task-Wise Summary
       </button>
-      <button class="btn ${activeTab === 'detailed' ? 'btn-primary' : 'btn-outline'}" onclick="navigateTo('reports-detailed')">
+      <button class="btn ${activeTab === 'detailed' ? 'btn-primary' : 'btn-outline'}" onclick="syncAndNavigateReportTab('reports-detailed')">
         <i class="fa-solid fa-table-columns"></i> Detailed Responses (Questions Grid)
       </button>
-      <button class="btn ${activeTab === 'teacher-wise' ? 'btn-primary' : 'btn-outline'}" onclick="navigateTo('reports-teacher-wise')">
+      <button class="btn ${activeTab === 'teacher-wise' ? 'btn-primary' : 'btn-outline'}" onclick="syncAndNavigateReportTab('reports-teacher-wise')">
         <i class="fa-solid fa-chart-line"></i> Teacher Performance
       </button>
     </div>
   `;
 }
 
+function syncAndNavigateReportTab(targetView) {
+  const currentSelected = state.filters.reportTaskId || state.filters.detailedTaskId;
+  if (currentSelected) {
+    state.filters.reportTaskId = currentSelected;
+    state.filters.detailedTaskId = currentSelected;
+  }
+  navigateTo(targetView);
+}
+window.syncAndNavigateReportTab = syncAndNavigateReportTab;
+
 async function renderTaskWiseReport(container) {
   const tasks = await api('/tasks');
-  const selectedTaskId = state.filters.reportTaskId || (tasks[0] ? tasks[0].id : null);
+  const selectedTaskId = state.filters.reportTaskId || state.filters.detailedTaskId || (tasks[0] ? tasks[0].id : null);
 
   if (!selectedTaskId) {
     container.innerHTML = `
@@ -3837,8 +3847,62 @@ async function renderTaskWiseReport(container) {
     return;
   }
 
+  // Ensure state consistency between tabs
+  state.filters.reportTaskId = selectedTaskId;
+  state.filters.detailedTaskId = selectedTaskId;
+
   const report = await api(`/reports/task-wise?task_id=${selectedTaskId}`);
   const { task, stats, rows } = report;
+
+  const currentFilter = state.filters.taskWiseFilter || ''; // '', 'SUBMITTED_ON_TIME', 'SUBMITTED_LATE', 'OVERDUE', 'COMPLETED', 'PENDING'
+  const sortBy = state.filters.taskWiseSortBy || 'display_name';
+  const sortDir = state.filters.taskWiseSortDir || 'asc';
+
+  let filteredRows = (rows || []).filter(r => {
+    if (currentFilter === 'SUBMITTED_ON_TIME') return r.status === 'SUBMITTED_ON_TIME';
+    if (currentFilter === 'SUBMITTED_LATE') return r.status === 'SUBMITTED_LATE';
+    if (currentFilter === 'OVERDUE') return r.status === 'OVERDUE';
+    if (currentFilter === 'COMPLETED') return r.status === 'SUBMITTED_ON_TIME' || r.status === 'SUBMITTED_LATE';
+    if (currentFilter === 'PENDING') return r.status === 'NOT_STARTED' || r.status === 'IN_PROGRESS';
+    return true;
+  });
+
+  filteredRows.sort((a, b) => {
+    let valA = a[sortBy] !== undefined && a[sortBy] !== null ? a[sortBy] : '';
+    let valB = b[sortBy] !== undefined && b[sortBy] !== null ? b[sortBy] : '';
+    if (sortBy.includes('_at')) {
+      const timeA = valA ? new Date(valA).getTime() : 0;
+      const timeB = valB ? new Date(valB).getTime() : 0;
+      return sortDir === 'asc' ? timeA - timeB : timeB - timeA;
+    }
+    const cmp = String(valA).localeCompare(String(valB), undefined, { numeric: true, sensitivity: 'base' });
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  function renderTaskWiseSortHeader(key, label) {
+    const isSorted = sortBy === key;
+    const icon = isSorted ? (sortDir === 'asc' ? 'fa-arrow-up-short-wide' : 'fa-arrow-down-wide-short') : 'fa-sort';
+    const newDir = isSorted && sortDir === 'asc' ? 'desc' : 'asc';
+    return `
+      <th style="cursor:pointer; user-select:none; white-space:nowrap;" onclick="state.filters.taskWiseSortBy = '${key}'; state.filters.taskWiseSortDir = '${newDir}'; loadCurrentView();">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span>${escapeHtml(label)}</span>
+          <i class="fa-solid ${icon}" style="font-size:0.75rem; color:${isSorted ? 'var(--primary)' : 'var(--text-subtle)'};"></i>
+        </div>
+      </th>
+    `;
+  }
+
+  function getFilterLabel(f) {
+    switch (f) {
+      case 'SUBMITTED_ON_TIME': return 'Submitted On Time';
+      case 'SUBMITTED_LATE': return 'Submitted Late';
+      case 'OVERDUE': return 'Overdue';
+      case 'COMPLETED': return 'Completed Submissions';
+      case 'PENDING': return 'Pending / In Progress';
+      default: return 'All Assigned Recipients';
+    }
+  }
 
   container.innerHTML = `
     ${renderReportTabs('task-wise')}
@@ -3847,7 +3911,7 @@ async function renderTaskWiseReport(container) {
     <div class="filter-bar">
       <div style="display:flex; align-items:center; gap:8px;">
         <label><strong>Select Task:</strong></label>
-        <select class="form-select" onchange="state.filters.reportTaskId = this.value; loadCurrentView();">
+        <select class="form-select" onchange="setTaskWiseActiveTask(this.value)">
           ${tasks.map(t => `<option value="${t.id}" ${t.id === selectedTaskId ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
         </select>
       </div>
@@ -3864,37 +3928,37 @@ async function renderTaskWiseReport(container) {
       </div>
     </div>
 
-    <!-- Summary KPI Cards -->
+    <!-- Summary KPI Cards (Interactive Filter Triggers) -->
     <div class="kpi-grid">
-      <div class="kpi-card">
+      <div class="kpi-card" style="cursor:pointer; transition:all 0.2s ease; ${!currentFilter ? 'border:2px solid var(--primary); background:var(--primary-light);' : ''}" onclick="toggleTaskWiseFilter('')" title="Click to view all recipients">
         <div class="kpi-icon blue"><i class="fa-solid fa-users"></i></div>
         <div>
           <div class="kpi-value">${stats.total}</div>
           <div class="kpi-label">Assigned Recipients</div>
         </div>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card" style="cursor:pointer; transition:all 0.2s ease; ${currentFilter === 'SUBMITTED_ON_TIME' ? 'border:2px solid var(--success); background:rgba(16, 185, 129, 0.1);' : ''}" onclick="toggleTaskWiseFilter('SUBMITTED_ON_TIME')" title="Click to filter by Submitted On Time">
         <div class="kpi-icon green"><i class="fa-solid fa-check"></i></div>
         <div>
           <div class="kpi-value">${stats.on_time}</div>
           <div class="kpi-label">Submitted On Time</div>
         </div>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card" style="cursor:pointer; transition:all 0.2s ease; ${currentFilter === 'SUBMITTED_LATE' ? 'border:2px solid var(--warning); background:rgba(245, 158, 11, 0.1);' : ''}" onclick="toggleTaskWiseFilter('SUBMITTED_LATE')" title="Click to filter by Submitted Late">
         <div class="kpi-icon yellow"><i class="fa-solid fa-clock"></i></div>
         <div>
           <div class="kpi-value">${stats.late}</div>
           <div class="kpi-label">Submitted Late</div>
         </div>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card" style="cursor:pointer; transition:all 0.2s ease; ${currentFilter === 'OVERDUE' ? 'border:2px solid var(--danger); background:rgba(239, 68, 68, 0.1);' : ''}" onclick="toggleTaskWiseFilter('OVERDUE')" title="Click to filter by Overdue">
         <div class="kpi-icon red"><i class="fa-solid fa-triangle-exclamation"></i></div>
         <div>
           <div class="kpi-value">${stats.overdue}</div>
           <div class="kpi-label">Overdue</div>
         </div>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card" style="cursor:pointer; transition:all 0.2s ease; ${currentFilter === 'COMPLETED' ? 'border:2px solid #8b5cf6; background:rgba(139, 92, 246, 0.1);' : ''}" onclick="toggleTaskWiseFilter('COMPLETED')" title="Click to filter by Completed (On-Time + Late)">
         <div class="kpi-icon purple"><i class="fa-solid fa-percent"></i></div>
         <div>
           <div class="kpi-value">${stats.completion_rate}%</div>
@@ -3903,27 +3967,49 @@ async function renderTaskWiseReport(container) {
       </div>
     </div>
 
-    <!-- Submissions Table -->
+    <!-- Submissions Table with Sorting and Filter Indicator -->
     <div class="card">
-      <div class="card-header">
-        <h2><i class="fa-solid fa-table"></i> Teacher Submissions Breakdown</h2>
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h2 style="margin:0;"><i class="fa-solid fa-table"></i> Teacher Submissions Breakdown</h2>
+          <span style="font-size:0.8rem; color:var(--text-muted);"><i class="fa-solid fa-arrow-down-a-z"></i> Click any column header to sort</span>
+        </div>
+        ${currentFilter ? `
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="badge badge-active" style="font-size:0.82rem; padding:4px 10px;">
+              <i class="fa-solid fa-filter"></i> Filtered: ${getFilterLabel(currentFilter)} (${filteredRows.length} of ${rows.length})
+            </span>
+            <button class="btn btn-secondary btn-sm" onclick="toggleTaskWiseFilter('')" title="Reset filter to show all recipients">
+              <i class="fa-solid fa-xmark"></i> Clear Filter
+            </button>
+          </div>
+        ` : `
+          <span style="font-size:0.82rem; color:var(--text-muted);">Showing all <strong>${rows.length}</strong> assigned recipients</span>
+        `}
       </div>
       <div class="card-body">
         <div class="table-responsive">
           <table class="table">
             <thead>
               <tr>
-                <th>Teacher</th>
-                <th>Campus</th>
-                <th>Assigned Date</th>
-                <th>Deadline</th>
-                <th>Submission Date</th>
-                <th>Status</th>
-                <th>Action</th>
+                ${renderTaskWiseSortHeader('display_name', 'Teacher')}
+                ${renderTaskWiseSortHeader('campus_name', 'Campus')}
+                ${renderTaskWiseSortHeader('assigned_at', 'Assigned Date')}
+                ${renderTaskWiseSortHeader('due_at', 'Deadline')}
+                ${renderTaskWiseSortHeader('submitted_at', 'Submission Date')}
+                ${renderTaskWiseSortHeader('status', 'Status')}
+                <th style="white-space:nowrap;">Action</th>
               </tr>
             </thead>
             <tbody>
-              ${rows.map(r => `
+              ${filteredRows.length === 0 ? `
+                <tr>
+                  <td colspan="7" class="empty-state" style="padding:24px;">
+                    <i class="fa-solid fa-filter-circle-xmark" style="font-size:1.8rem; color:var(--text-muted); margin-bottom:6px;"></i>
+                    <p>No submission records match the selected filter (${getFilterLabel(currentFilter)}).</p>
+                  </td>
+                </tr>
+              ` : filteredRows.map(r => `
                 <tr>
                   <td>
                     <strong>${escapeHtml(r.display_name)}</strong>
@@ -3936,7 +4022,7 @@ async function renderTaskWiseReport(container) {
                   <td><span class="badge badge-${r.status.toLowerCase().replace(/_/g, '-')}">${formatStatus(r.status)}</span></td>
                   <td>
                     ${r.submitted_at ? `
-                      <button class="btn btn-secondary btn-sm" onclick="openResponseViewerModal('${task.id}', '${r.user_id}', '${escapeHtml(r.display_name)}')">
+                      <button class="btn btn-secondary btn-sm" onclick="openResponseViewerModal('${task.id}', '${r.user_id}', '${escapeHtml(r.display_name).replace(/'/g, "\\'")}')">
                         <i class="fa-solid fa-eye"></i> View Answers
                       </button>
                     ` : '<span style="font-size:0.8rem; color:var(--text-muted);">No Response</span>'}
@@ -3951,10 +4037,34 @@ async function renderTaskWiseReport(container) {
   `;
 }
 
+function setTaskWiseActiveTask(taskId) {
+  state.filters.reportTaskId = taskId;
+  state.filters.detailedTaskId = taskId;
+  state.filters.detailedColumns = null;
+  state.filters.taskWiseFilter = '';
+  loadCurrentView();
+}
+
+function toggleTaskWiseFilter(filterKey) {
+  if (state.filters.taskWiseFilter === filterKey) {
+    state.filters.taskWiseFilter = '';
+  } else {
+    state.filters.taskWiseFilter = filterKey;
+  }
+  loadCurrentView();
+}
+
+window.setTaskWiseActiveTask = setTaskWiseActiveTask;
+window.toggleTaskWiseFilter = toggleTaskWiseFilter;
+
 function openTaskReport(taskId) {
   state.filters.reportTaskId = taskId;
+  state.filters.detailedTaskId = taskId;
+  state.filters.detailedColumns = null;
+  state.filters.taskWiseFilter = '';
   navigateTo('reports-task-wise');
 }
+window.openTaskReport = openTaskReport;
 
 function exportTaskResponses(taskId) {
   window.open(`/api/reports/export?task_id=${taskId}`, '_blank');
@@ -4300,7 +4410,7 @@ function debounceTeacherSearch() {
 // Detailed Response Report with Sorting, Filtering, and Dynamic Question Columns
 async function renderDetailedResponseReport(container) {
   const tasks = await api('/tasks');
-  const selectedTaskId = state.filters.detailedTaskId || (tasks[0] ? tasks[0].id : null);
+  const selectedTaskId = state.filters.detailedTaskId || state.filters.reportTaskId || (tasks[0] ? tasks[0].id : null);
 
   if (!selectedTaskId) {
     container.innerHTML = `
@@ -4309,6 +4419,10 @@ async function renderDetailedResponseReport(container) {
     `;
     return;
   }
+
+  // Ensure state consistency between tabs
+  state.filters.detailedTaskId = selectedTaskId;
+  state.filters.reportTaskId = selectedTaskId;
 
   const campuses = await api('/campuses');
   const reportData = await api(`/reports/detailed-response?task_id=${selectedTaskId}`);
@@ -4372,7 +4486,7 @@ async function renderDetailedResponseReport(container) {
     <div class="filter-bar">
       <div style="display:flex; align-items:center; gap:8px;">
         <label><strong>Task:</strong></label>
-        <select class="form-select" onchange="state.filters.detailedTaskId = this.value; state.filters.detailedColumns = null; loadCurrentView();">
+        <select class="form-select" onchange="setDetailedReportActiveTask(this.value)">
           ${tasks.map(t => `<option value="${t.id}" ${t.id === selectedTaskId ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
         </select>
       </div>
@@ -4539,6 +4653,14 @@ function resetDefaultDetailedCols() {
   state.filters.isColumnCustomizerOpen = true;
   loadCurrentView();
 }
+
+function setDetailedReportActiveTask(taskId) {
+  state.filters.detailedTaskId = taskId;
+  state.filters.reportTaskId = taskId;
+  state.filters.detailedColumns = null;
+  loadCurrentView();
+}
+window.setDetailedReportActiveTask = setDetailedReportActiveTask;
 
 // ============================================================================
 // 9. FACULTY, GROUPS, MASTERS & RECURRING TASKS

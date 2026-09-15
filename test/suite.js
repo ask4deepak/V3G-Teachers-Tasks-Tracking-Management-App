@@ -831,6 +831,43 @@ West Coast Campus, WCC`;
     assert.ok(publishedTask.published_at);
   });
 
+  await test('Task creation alert sends to Global Alert Emails even when User-Defined email is blank', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0];
+
+    // Configure system setting
+    await db.updateSystemSettings({
+      task_notification_emails: 'global-alerts@institution.edu, director@institution.edu'
+    });
+
+    const taskId = 'task-global-only-' + Date.now();
+    const taskObj = {
+      id: taskId,
+      task_type: 'ONE_TIME',
+      title: 'Global Alert Only Task',
+      description: 'Verifying global alerts dispatch',
+      notification_emails: '', // Intentionally blank user-defined emails
+      campus_ids: [campus.id],
+      questions: [],
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'DRAFT',
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000),
+      created_by: store.users[0].id,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    store.tasks.push(taskObj);
+
+    // Test sending alert on draft/creation
+    const alertResult = await services.sendTaskCreatedStakeholdersEmail(taskObj, []);
+    assert.ok(alertResult.success);
+    assert.strictEqual(alertResult.notifiedCount, 2);
+    assert.ok(alertResult.emails.includes('global-alerts@institution.edu'));
+    assert.ok(alertResult.emails.includes('director@institution.edu'));
+  });
+
   console.log('\n--- Phase 10: Task Form Builder & Custom Questions Lifecycle Verification ---');
 
   await test('Task creation preserves full question field configurations (all types)', async () => {

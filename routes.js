@@ -2560,6 +2560,21 @@ router.post('/tasks', auth.requirePermission('tasks.create'), async (req, res) =
     if (publish_now && task_type === 'ONE_TIME') {
       const pubResult = await services.publishTask(taskId, req.user.id, req.ip);
       return res.json({ success: true, id: taskId, published: true, recipients: pubResult.recipientCount });
+    } else {
+      setImmediate(async () => {
+        try {
+          const taskObj = {
+            id: taskId,
+            title: formattedTitle,
+            description,
+            notification_emails: notification_emails || '',
+            task_type
+          };
+          await services.sendTaskCreatedStakeholdersEmail(taskObj, req.user, [], deadline);
+        } catch (e) {
+          console.warn(`[Stakeholder Task Creation Email Alert Failed]: ${e.message}`);
+        }
+      });
     }
 
     res.json({ success: true, id: taskId, published: false });
