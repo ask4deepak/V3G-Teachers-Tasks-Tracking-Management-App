@@ -831,6 +831,127 @@ West Coast Campus, WCC`;
     assert.ok(publishedTask.published_at);
   });
 
+  console.log('\n--- Phase 10: Task Form Builder & Custom Questions Lifecycle Verification ---');
+
+  await test('Task creation preserves full question field configurations (all types)', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0];
+    const taskId = 'task-questions-test-' + Date.now();
+
+    const questionsConfig = [
+      { key: 'Q1', label: 'Classes Conducted', type: 'number', required: true },
+      { key: 'Q2', label: 'Topics Covered Summary', type: 'long_text', required: true },
+      { key: 'Q3', label: 'All Students Present?', type: 'yes_no', required: false },
+      { key: 'Q4', label: 'Teaching Methodology', type: 'single_choice', required: true, options: ['Lecture', 'Practical Lab', 'Group Discussion'] },
+      { key: 'Q5', label: 'Resources Utilized', type: 'multiple_choice', required: false, options: ['Smart Board', 'Worksheets', 'Textbook', 'Online Portal'] },
+      { key: 'Q6', label: 'Assessment Grade Level', type: 'dropdown', required: true, options: ['Grade A', 'Grade B', 'Grade C', 'Grade D'] }
+    ];
+
+    const taskObj = {
+      id: taskId,
+      task_type: 'ONE_TIME',
+      title: 'Weekly Academic Delivery & Verification Report',
+      description: 'Fill out all field requirements for the week.',
+      notification_emails: 'qa@institution.edu',
+      campus_ids: [campus.id],
+      questions: questionsConfig,
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'DRAFT',
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000 * 3),
+      created_by: store.users[0].id,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    store.tasks.push(taskObj);
+
+    // Verify task stored questions
+    const retrievedTask = store.tasks.find(t => t.id === taskId);
+    assert.ok(retrievedTask);
+    assert.strictEqual(retrievedTask.questions.length, 6);
+    assert.strictEqual(retrievedTask.questions[0].label, 'Classes Conducted');
+    assert.strictEqual(retrievedTask.questions[0].type, 'number');
+    assert.strictEqual(retrievedTask.questions[3].options.length, 3);
+    assert.deepStrictEqual(retrievedTask.questions[3].options, ['Lecture', 'Practical Lab', 'Group Discussion']);
+    assert.strictEqual(retrievedTask.questions[4].type, 'multiple_choice');
+    assert.strictEqual(retrievedTask.questions[5].type, 'dropdown');
+  });
+
+  await test('Task publication preserves questions, generates assignments and records responses with questions', async () => {
+    const store = db.getMemoryStore();
+    const campus = store.campuses[0];
+    const teacher = store.users.find(u => u.user_type === 'TEACHER');
+    assert.ok(teacher, 'Must have at least one teacher user');
+
+    const taskId = 'task-q-pub-' + Date.now();
+    const questionsConfig = [
+      { key: 'Q1', label: 'Classes Conducted', type: 'number', required: true },
+      { key: 'Q2', label: 'Teaching Methodology', type: 'single_choice', required: true, options: ['Lecture', 'Practical Lab'] }
+    ];
+
+    const taskObj = {
+      id: taskId,
+      task_type: 'ONE_TIME',
+      title: 'Lab Delivery Log',
+      description: 'Log lab experiments conducted.',
+      campus_ids: [campus.id],
+      questions: questionsConfig,
+      audience_rules: {},
+      recipient_exclusions: [],
+      status: 'DRAFT',
+      open_at: new Date(),
+      deadline_at: new Date(Date.now() + 86400000 * 5),
+      created_by: store.users[0].id,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    store.tasks.push(taskObj);
+
+    // Publish
+    const pubRes = await services.publishTask(taskId, store.users[0].id);
+    assert.ok(pubRes.success);
+
+    // Verify assignment created
+    const asg = store.assignments.find(a => a.task_id === taskId && a.user_id === teacher.id);
+    assert.ok(asg, 'Teacher should have an assignment created upon publication');
+
+    // Simulate teacher submitting answers to questions
+    const answers = {
+      Q1: 4,
+      Q2: 'Practical Lab'
+    };
+
+    const submissionId = 'sub-q-test-' + Date.now();
+    store.submissions.push({
+      id: submissionId,
+      assignment_id: asg.id,
+      answers,
+      draft_flag: false,
+      submitted_at: new Date(),
+      created_at: new Date(),
+      updated_at: new Date()
+    });
+    asg.status = 'SUBMITTED_ON_TIME';
+
+    // Verify detailed response Excel workbook generation includes custom questions
+    const taskRecord = store.tasks.find(t => t.id === taskId);
+    const dataForExport = [{
+      display_name: teacher.display_name,
+      employee_code: teacher.employee_code,
+      campus_name: campus.name,
+      assigned_at: asg.assigned_at,
+      due_at: asg.due_at,
+      submitted_at: new Date(),
+      status: asg.status,
+      answers
+    }];
+
+    const buffer = services.generateTaskResponseWorkbook(taskRecord, dataForExport);
+    assert.ok(buffer);
+    assert.ok(buffer.length > 0);
+  });
+
   console.log('\n========================================================');
   console.log(`📊 Test Results: ${passedTests} / ${totalTests} Passed`);
   console.log('========================================================\n');

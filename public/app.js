@@ -3092,12 +3092,12 @@ async function renderTaskBuilderStepContent(tb, campuses) {
             <h3 style="margin:0 0 4px 0; font-size:1.2rem;"><i class="fa-solid fa-rectangle-list text-primary" style="margin-right:6px;"></i> Step 2: Response Form Builder</h3>
             <p style="color:var(--text-muted); font-size:0.88rem; margin:0;">Define questions and input fields required from teachers.</p>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="addTaskQuestion()"><i class="fa-solid fa-plus"></i> Add Question</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addTaskQuestion()"><i class="fa-solid fa-plus"></i> Add Question</button>
         </div>
 
         <div id="questions-list">
           ${tb.questions.map((q, idx) => `
-            <div class="question-card" id="q-block-${idx}">
+            <div class="question-card question-block" id="q-block-${idx}">
               <div class="question-card-header">
                 <div style="display:flex; align-items:center; gap:8px;">
                   <span class="question-index-badge">Q${idx + 1}</span>
@@ -3108,7 +3108,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
 
               <div class="form-group" style="margin-bottom:12px;">
                 <label>Question Label / Prompt <span class="text-danger">*</span></label>
-                <input type="text" class="form-input q-label" value="${escapeHtml(q.label)}" placeholder="e.g. Enter total number of classes conducted..." />
+                <input type="text" class="form-input q-label" value="${escapeHtml(q.label || '')}" placeholder="e.g. Enter total number of classes conducted..." />
               </div>
 
               <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items:flex-end;">
@@ -3137,7 +3137,7 @@ async function renderTaskBuilderStepContent(tb, campuses) {
               ${['single_choice', 'multiple_choice', 'dropdown'].includes(q.type) ? `
                 <div class="form-group" style="margin-top:12px; margin-bottom:0;">
                   <label>Options List (Comma separated)</label>
-                  <input type="text" class="form-input q-options" value="${(q.options || []).join(', ')}" placeholder="Option A, Option B, Option C" />
+                  <input type="text" class="form-input q-options" value="${(Array.isArray(q.options) ? q.options : (typeof q.options === 'string' ? q.options.split(',') : [])).join(', ')}" placeholder="Option A, Option B, Option C" />
                   <span style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">Separate each choice with a comma.</span>
                 </div>
               ` : ''}
@@ -3146,8 +3146,8 @@ async function renderTaskBuilderStepContent(tb, campuses) {
         </div>
 
         <div style="display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color);">
-          <button class="btn btn-secondary" onclick="state.taskBuilder.step = 1; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
-          <button class="btn btn-primary" onclick="saveTaskBuilderQuestions()">Next: Campuses <i class="fa-solid fa-arrow-right"></i></button>
+          <button type="button" class="btn btn-secondary" onclick="saveTaskBuilderQuestions(false); state.taskBuilder.step = 1; loadCurrentView();"><i class="fa-solid fa-arrow-left"></i> Back</button>
+          <button type="button" class="btn btn-primary" onclick="saveTaskBuilderQuestions(true)">Next: Campuses <i class="fa-solid fa-arrow-right"></i></button>
         </div>
       `;
 
@@ -3481,8 +3481,37 @@ async function renderTaskBuilderStepContent(tb, campuses) {
   }
 }
 
+function collectQuestionsFromDOM() {
+  const blocks = document.querySelectorAll('.question-block, .question-card[id^="q-block-"]');
+  if (!blocks || blocks.length === 0) {
+    return (state.taskBuilder && Array.isArray(state.taskBuilder.questions)) ? state.taskBuilder.questions : [];
+  }
+  const questions = [];
+  blocks.forEach((b, i) => {
+    const labelInput = b.querySelector('.q-label');
+    const typeSelect = b.querySelector('.q-type');
+    const reqCheckbox = b.querySelector('.q-required');
+    const optInput = b.querySelector('.q-options');
+
+    const label = labelInput ? labelInput.value.trim() : '';
+    const type = typeSelect ? typeSelect.value : 'short_text';
+    const required = reqCheckbox ? reqCheckbox.checked : false;
+    const options = optInput ? optInput.value.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+    questions.push({
+      key: `Q${i + 1}`,
+      label: label || `Question ${i + 1}`,
+      type,
+      required,
+      options
+    });
+  });
+  return questions;
+}
+
 function saveTaskBuilderStep(curr, next) {
   const tb = state.taskBuilder;
+  if (!tb) return;
   if (curr === 1) {
     const title = document.getElementById('tb-title').value.trim();
     if (!title) return showToast('Please enter a task title', 'warning');
@@ -3519,55 +3548,56 @@ function saveTaskBuilderStep(curr, next) {
         max_occurrences: maxOccurrences
       };
     }
+  } else if (curr === 2) {
+    tb.questions = collectQuestionsFromDOM();
   }
   tb.step = next;
   loadCurrentView();
 }
 
 function addTaskQuestion() {
-  state.taskBuilder.questions.push({
-    key: `Q${state.taskBuilder.questions.length + 1}`,
+  const current = collectQuestionsFromDOM();
+  current.push({
+    key: `Q${current.length + 1}`,
     label: '',
     type: 'short_text',
-    required: false
+    required: false,
+    options: []
   });
+  state.taskBuilder.questions = current;
   loadCurrentView();
 }
 
 function removeTaskQuestion(idx) {
-  state.taskBuilder.questions.splice(idx, 1);
+  const current = collectQuestionsFromDOM();
+  current.splice(idx, 1);
+  current.forEach((q, i) => { q.key = `Q${i + 1}`; });
+  state.taskBuilder.questions = current;
   loadCurrentView();
 }
 
 function updateQuestionType(idx, val) {
-  state.taskBuilder.questions[idx].type = val;
+  const current = collectQuestionsFromDOM();
+  if (current[idx]) {
+    current[idx].type = val;
+  }
+  state.taskBuilder.questions = current;
   loadCurrentView();
 }
 
-function saveTaskBuilderQuestions() {
-  const blocks = document.querySelectorAll('.question-block');
-  const questions = [];
-
-  blocks.forEach((b, i) => {
-    const label = b.querySelector('.q-label').value.trim();
-    const type = b.querySelector('.q-type').value;
-    const required = b.querySelector('.q-required').checked;
-    const optInput = b.querySelector('.q-options');
-    const options = optInput ? optInput.value.split(',').map(s => s.trim()).filter(Boolean) : [];
-
-    questions.push({
-      key: `Q${i + 1}`,
-      label: label || `Question ${i + 1}`,
-      type,
-      required,
-      options
-    });
-  });
-
-  state.taskBuilder.questions = questions;
-  state.taskBuilder.step = 3;
-  loadCurrentView();
+function saveTaskBuilderQuestions(advance = true) {
+  state.taskBuilder.questions = collectQuestionsFromDOM();
+  if (advance) {
+    state.taskBuilder.step = 3;
+    loadCurrentView();
+  }
 }
+
+window.collectQuestionsFromDOM = collectQuestionsFromDOM;
+window.addTaskQuestion = addTaskQuestion;
+window.removeTaskQuestion = removeTaskQuestion;
+window.updateQuestionType = updateQuestionType;
+window.saveTaskBuilderQuestions = saveTaskBuilderQuestions;
 
 function saveTaskBuilderCampuses() {
   const checked = Array.from(document.querySelectorAll('input[name="tb_campuses"]:checked')).map(el => el.value);
